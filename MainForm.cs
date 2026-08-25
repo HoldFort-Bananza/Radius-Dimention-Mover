@@ -16,6 +16,13 @@ namespace RadiusDimensionMover
         // kliknięciu "Przesuń".
         private bool _oppositeDirection = false;
 
+        // Blokada przycisku "Przesuń" po udanym przesunięciu - dopóki nie
+        // klikniesz "Cofnij", kolejne kliknięcia "Przesuń" nic nie robią.
+        // Chroni to przed sytuacją, gdy Tekla "zawiesza się" na chwilę,
+        // użytkownik klika kilka razy myśląc że nic się nie stało, i wymiar
+        // wylatuje daleko poza rysunek zamiast przesunąć się raz o krok.
+        private bool _canRun = true;
+
         private NumericUpDown _offsetInput;
         private Button _toggleDirectionButton;
         private Button _runButton;
@@ -145,6 +152,14 @@ namespace RadiusDimensionMover
 
         private void RunButton_Click(object sender, EventArgs e)
         {
+            if (!_canRun)
+            {
+                // Zabezpieczenie na wypadek, gdyby kliknięcie mimo wszystko
+                // dotarło (np. kolejka komunikatów) mimo że przycisk powinien
+                // być zablokowany - nic nie rób, nie przesuwaj drugi raz.
+                return;
+            }
+
             _logBox.Clear();
             SetButtonsEnabled(false);
             _statusLabel.Text = "Przetwarzanie...";
@@ -154,7 +169,13 @@ namespace RadiusDimensionMover
                 double offsetMm = (double)_offsetInput.Value;
                 var result = _service.MoveAllRadiusDimensionsOutward(offsetMm, _oppositeDirection, Log);
 
-                _statusLabel.Text = $"Gotowe. Przesunięto {result.MovedCount} z {result.TotalCount} wymiarów R. Kliknij ponownie, żeby doładować, albo Cofnij.";
+                // Po udanym przesunięciu blokujemy "Przesuń", żeby kolejne
+                // kliknięcia (np. z niecierpliwości, gdy Tekla chwilę nie
+                // odpowiada) nie dokładały kroku jeszcze raz. Żeby przesunąć
+                // dalej, trzeba świadomie kliknąć "Cofnij" i spróbować ponownie.
+                _canRun = false;
+
+                _statusLabel.Text = $"Gotowe. Przesunięto {result.MovedCount} z {result.TotalCount} wymiarów R. Żeby przesunąć ponownie, najpierw kliknij Cofnij.";
             }
             catch (Exception ex)
             {
@@ -186,6 +207,11 @@ namespace RadiusDimensionMover
                 {
                     _statusLabel.Text = $"Cofnięto {result.MovedCount} z {result.TotalCount} wymiarów R.";
                 }
+
+                // Cofnięcie (nawet gdy nie było czego cofać) odblokowuje
+                // "Przesuń" - wracamy do stanu, w którym jedno kliknięcie
+                // = jedno przesunięcie.
+                _canRun = true;
             }
             catch (Exception ex)
             {
@@ -202,7 +228,10 @@ namespace RadiusDimensionMover
         private void SetButtonsEnabled(bool enabled)
         {
             _toggleDirectionButton.Enabled = enabled;
-            _runButton.Enabled = enabled;
+            // "Przesuń" wraca do stanu aktywnego tylko jeśli nie jest
+            // zablokowany przez _canRun (czyli dopóki nie kliknięto "Cofnij"
+            // po ostatnim udanym przesunięciu).
+            _runButton.Enabled = enabled && _canRun;
             _undoButton.Enabled = enabled;
         }
 
