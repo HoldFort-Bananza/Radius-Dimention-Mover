@@ -24,9 +24,10 @@ namespace RadiusDimensionMover
         private bool _canRun = true;
 
         private NumericUpDown _offsetInput;
+        private Label _offsetLabel;
+        private CheckBox _advancedCheckBox;
         private Button _toggleDirectionButton;
         private Button _runButton;
-        private Button _autoPlaceButton;
         private Button _undoButton;
         private Label _directionLabel;
         private TextBox _logBox;
@@ -60,18 +61,30 @@ namespace RadiusDimensionMover
             };
             _toggleDirectionButton.Click += ToggleDirectionButton_Click;
 
-            // --- Wiersz 2: krok przesunięcia + przycisk Przesuń (razem, obok siebie) ---
-            var offsetLabel = new Label
+            // --- Wiersz 2: tryb zaawansowany (ręczny krok) - domyślnie wyłączony,
+            // program sam wtedy dobiera odległość i unika kolizji ---
+            _advancedCheckBox = new CheckBox
+            {
+                Text = "Zaawansowane: własny krok",
+                Left = 15,
+                Top = 60,
+                Width = 220,
+                Checked = false
+            };
+            _advancedCheckBox.CheckedChanged += AdvancedCheckBox_CheckedChanged;
+
+            _offsetLabel = new Label
             {
                 Text = "Krok [mm]:",
-                Left = 15,
+                Left = 250,
                 Top = 62,
-                Width = 75
+                Width = 70,
+                Enabled = false
             };
 
             _offsetInput = new NumericUpDown
             {
-                Left = 95,
+                Left = 325,
                 Top = 58,
                 Width = 80,
                 Minimum = 1,
@@ -79,29 +92,21 @@ namespace RadiusDimensionMover
                 // Podniesiony domyślny krok (było 20) - na podstawie testów
                 // na żywych rysunkach (Einzelteil Träger) 15-20mm często
                 // nie wystarczało, żeby ominąć sąsiednie wymiary/teksty.
-                Value = 40
+                Value = 40,
+                Enabled = false
             };
 
+            // --- Wiersz 3: Przesuń - domyślnie auto (sam dobiera odległość,
+            // omija kolizje); przy zaznaczonym checkboxie używa Krok [mm] ---
             _runButton = new Button
             {
-                Text = "Przesuń wszystkie wymiary R (+krok)",
-                Left = 185,
-                Top = 56,
-                Width = 300,
-                Height = 35
-            };
-            _runButton.Click += RunButton_Click;
-
-            // --- Wiersz 3: auto-rozstawianie (unika kolizji z tekstami i innymi wymiarami R) ---
-            _autoPlaceButton = new Button
-            {
-                Text = "Auto-rozstaw wymiary R (unikaj kolizji)",
+                Text = "Przesuń wszystkie wymiary R (auto)",
                 Left = 15,
                 Top = 100,
                 Width = 470,
-                Height = 32
+                Height = 35
             };
-            _autoPlaceButton.Click += AutoPlaceButton_Click;
+            _runButton.Click += RunButton_Click;
 
             // --- Wiersz 4: Cofnij ---
             _undoButton = new Button
@@ -137,10 +142,10 @@ namespace RadiusDimensionMover
 
             Controls.Add(_directionLabel);
             Controls.Add(_toggleDirectionButton);
-            Controls.Add(offsetLabel);
+            Controls.Add(_advancedCheckBox);
+            Controls.Add(_offsetLabel);
             Controls.Add(_offsetInput);
             Controls.Add(_runButton);
-            Controls.Add(_autoPlaceButton);
             Controls.Add(_undoButton);
             Controls.Add(_statusLabel);
             Controls.Add(_logBox);
@@ -165,8 +170,7 @@ namespace RadiusDimensionMover
                 {
                     _canRun = true;
                     _runButton.Enabled = true;
-                    _autoPlaceButton.Enabled = true;
-                    _statusLabel.Text = "Wykryto ręczną zmianę wymiaru na rysunku – przyciski Przesuń/Auto-rozstaw odblokowane.";
+                    _statusLabel.Text = "Wykryto ręczną zmianę wymiaru na rysunku – przycisk Przesuń odblokowany.";
                 }
             }
             catch
@@ -174,6 +178,16 @@ namespace RadiusDimensionMover
                 // Ciche pominięcie - nie chcemy wyskakujących błędów przy
                 // zwykłym przełączeniu się z powrotem na to okno.
             }
+        }
+
+        private void AdvancedCheckBox_CheckedChanged(object sender, EventArgs e)
+        {
+            bool advanced = _advancedCheckBox.Checked;
+            _offsetLabel.Enabled = advanced;
+            _offsetInput.Enabled = advanced;
+            _runButton.Text = advanced
+                ? "Przesuń wszystkie wymiary R (+krok)"
+                : "Przesuń wszystkie wymiary R (auto)";
         }
 
         private void ToggleDirectionButton_Click(object sender, EventArgs e)
@@ -209,8 +223,33 @@ namespace RadiusDimensionMover
 
             try
             {
-                double offsetMm = (double)_offsetInput.Value;
-                var result = _service.MoveAllRadiusDimensionsOutward(offsetMm, _oppositeDirection, Log);
+                bool advanced = _advancedCheckBox.Checked;
+                MoveResult result;
+
+                if (advanced)
+                {
+                    double offsetMm = (double)_offsetInput.Value;
+
+                    if (_service.WouldManualMoveCollide(offsetMm, _oppositeDirection))
+                    {
+                        bool proceed = ShowCollisionConfirm(
+                            "Przy wpisanym kroku co najmniej jeden tekst wymiaru R będzie nachodził na inny " +
+                            "element rysunku (inny tekst albo inny wymiar R).\n\n" +
+                            "Kontynuować mimo to, czy anulować i np. zmniejszyć krok / użyć trybu auto?");
+
+                        if (!proceed)
+                        {
+                            _statusLabel.Text = "Anulowano - kolizja przy wpisanym kroku.";
+                            return;
+                        }
+                    }
+
+                    result = _service.MoveAllRadiusDimensionsOutward(offsetMm, _oppositeDirection, Log);
+                }
+                else
+                {
+                    result = _service.AutoPlaceRadiusDimensionsAvoidingText(_oppositeDirection, Log);
+                }
 
                 // Po udanym przesunięciu blokujemy "Przesuń", żeby kolejne
                 // kliknięcia (np. z niecierpliwości, gdy Tekla chwilę nie
@@ -232,36 +271,60 @@ namespace RadiusDimensionMover
             }
         }
 
-        private void AutoPlaceButton_Click(object sender, EventArgs e)
+        /// <summary>
+        /// Modalne ostrzeżenie o kolizji z opcją "Anuluj" / "Kontynuuj mimo to".
+        /// Enter/Esc domyślnie trafiają na "Anuluj" - to bezpieczniejsza
+        /// domyślna opcja niż przypadkowe przebicie się przez ostrzeżenie.
+        /// </summary>
+        private bool ShowCollisionConfirm(string message)
         {
-            if (!_canRun)
+            using (var dialog = new Form())
             {
-                return;
-            }
+                dialog.Text = "Uwaga - możliwa kolizja";
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.MinimizeBox = false;
+                dialog.MaximizeBox = false;
+                dialog.ShowInTaskbar = false;
+                dialog.Width = 420;
+                dialog.Height = 210;
 
-            _logBox.Clear();
-            SetButtonsEnabled(false);
-            _statusLabel.Text = "Przetwarzanie (auto-rozstawianie)...";
+                var label = new Label
+                {
+                    Text = message,
+                    Left = 15,
+                    Top = 15,
+                    Width = 375,
+                    Height = 110
+                };
 
-            try
-            {
-                var result = _service.AutoPlaceRadiusDimensionsAvoidingText(_oppositeDirection, Log);
+                var cancelButton = new Button
+                {
+                    Text = "Anuluj",
+                    Left = 15,
+                    Top = 135,
+                    Width = 120,
+                    Height = 32,
+                    DialogResult = DialogResult.Cancel
+                };
 
-                // Tak samo jak przy "Przesuń" - blokujemy oba przyciski
-                // przesuwające do czasu kliknięcia "Cofnij".
-                _canRun = false;
+                var continueButton = new Button
+                {
+                    Text = "Kontynuuj mimo to",
+                    Left = 265,
+                    Top = 135,
+                    Width = 125,
+                    Height = 32,
+                    DialogResult = DialogResult.OK
+                };
 
-                _statusLabel.Text = $"Gotowe. Auto-rozstawiono {result.MovedCount} z {result.TotalCount} wymiarów R. Żeby zrobić to ponownie, najpierw kliknij Cofnij.";
-            }
-            catch (Exception ex)
-            {
-                _statusLabel.Text = "Błąd – zobacz log.";
-                Log("BŁĄD: " + ex.Message);
-                Log(ex.StackTrace);
-            }
-            finally
-            {
-                SetButtonsEnabled(true);
+                dialog.Controls.Add(label);
+                dialog.Controls.Add(cancelButton);
+                dialog.Controls.Add(continueButton);
+                dialog.AcceptButton = cancelButton;
+                dialog.CancelButton = cancelButton;
+
+                return dialog.ShowDialog(this) == DialogResult.OK;
             }
         }
 
@@ -304,11 +367,11 @@ namespace RadiusDimensionMover
         private void SetButtonsEnabled(bool enabled)
         {
             _toggleDirectionButton.Enabled = enabled;
-            // "Przesuń" i "Auto-rozstaw" wracają do stanu aktywnego tylko
-            // jeśli nie są zablokowane przez _canRun (czyli dopóki nie
-            // kliknięto "Cofnij" po ostatnim udanym przesunięciu).
+            _advancedCheckBox.Enabled = enabled;
+            // "Przesuń" wraca do stanu aktywnego tylko jeśli nie jest
+            // zablokowany przez _canRun (czyli dopóki nie kliknięto "Cofnij"
+            // po ostatnim udanym przesunięciu).
             _runButton.Enabled = enabled && _canRun;
-            _autoPlaceButton.Enabled = enabled && _canRun;
             _undoButton.Enabled = enabled;
         }
 

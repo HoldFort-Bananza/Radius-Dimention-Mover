@@ -136,23 +136,7 @@ namespace RadiusDimensionMover
                 {
                     double previousDistance = rd.Distance;
 
-                    Point center = TryGetCircleCenter(rd.ArcPoint1, rd.ArcPoint2, rd.ArcPoint3);
-                    Point referencePoint = rd.ArcPoint2;
-
-                    double dirX = 1.0, dirY = 0.0;
-                    if (center != null)
-                    {
-                        // Kierunek, w którym faktycznie ucieka tekst R-wymiaru,
-                        // to (center - arcPoint) - sprawdzone na żywym rysunku.
-                        double vx = center.X - referencePoint.X;
-                        double vy = center.Y - referencePoint.Y;
-                        double len = Math.Sqrt(vx * vx + vy * vy);
-                        if (len > 1e-6)
-                        {
-                            dirX = vx / len;
-                            dirY = vy / len;
-                        }
-                    }
+                    var (dirX, dirY, referencePoint) = GetOutwardDirection(rd);
 
                     double chosenDistance = StartDistanceMm;
                     bool foundClear = false;
@@ -345,6 +329,143 @@ namespace RadiusDimensionMover
             double uy = (ax2ay2 * (cx - bx) + bx2by2 * (ax - cx) + cx2cy2 * (bx - ax)) / d;
 
             return new Point(ux, uy, a.Z);
+        }
+
+        /// <summary>
+        /// Wylicza kierunek "na zewnątrz" (w stronę, w którą realnie ucieka
+        /// tekst wymiaru R) oraz punkt odniesienia (ArcPoint2) dla danego
+        /// wymiaru R. Współdzielone przez auto-rozstawianie i sprawdzanie
+        /// kolizji przy ręcznym kroku, żeby liczyć to samo tak samo.
+        /// </summary>
+        private static (double dirX, double dirY, Point referencePoint) GetOutwardDirection(RadiusDimension rd)
+        {
+            Point center = TryGetCircleCenter(rd.ArcPoint1, rd.ArcPoint2, rd.ArcPoint3);
+            Point referencePoint = rd.ArcPoint2;
+
+            double dirX = 1.0, dirY = 0.0;
+            if (center != null)
+            {
+                double vx = center.X - referencePoint.X;
+                double vy = center.Y - referencePoint.Y;
+                double len = Math.Sqrt(vx * vx + vy * vy);
+                if (len > 1e-6)
+                {
+                    dirX = vx / len;
+                    dirY = vy / len;
+                }
+            }
+
+            return (dirX, dirY, referencePoint);
+        }
+
+        private static double DistanceBetween(double x1, double y1, double x2, double y2)
+        {
+            double dx = x1 - x2;
+            double dy = y1 - y2;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        /// <summary>
+        /// Sprawdza (bez wprowadzania żadnych zmian na rysunku), czy ręczne
+        /// przesunięcie wszystkich wymiarów R o offsetMm spowodowałoby
+        /// kolizję - z innym tekstem na arkuszu albo z innym wymiarem R,
+        /// który też przesunąłby się o ten sam krok. Używane, żeby ostrzec
+        /// "power usera" PRZED wykonaniem ręcznego przesunięcia, zamiast po
+        /// fakcie każąc mu to poprawiać.
+        /// </summary>
+        public bool WouldManualMoveCollide(double offsetMm, bool oppositeDirection)
+        {
+            var drawingHandler = new DrawingHandler();
+            if (!drawingHandler.GetConnectionStatus())
+            {
+                return false;
+            }
+
+            Drawing activeDrawing = drawingHandler.GetActiveDrawing();
+            if (activeDrawing == null)
+            {
+                return false;
+            }
+
+            var sheet = activeDrawing.GetSheet();
+            if (sheet == null)
+            {
+                return false;
+            }
+
+            var radiusDimensions = new List<RadiusDimension>();
+            var textPoints = new List<Point>();
+
+            DrawingObjectEnumerator objectEnum = sheet.GetAllObjects();
+            while (objectEnum.MoveNext())
+            {
+                var current = objectEnum.Current;
+
+                if (current is RadiusDimension rd)
+                {
+                    radiusDimensions.Add(rd);
+                    continue;
+                }
+
+                if (current is Text txt)
+                {
+                    try
+                    {
+                        var box = txt.GetAxisAlignedBoundingBox();
+                        textPoints.Add(new Point(
+                            (box.MinPoint.X + box.MaxPoint.X) / 2.0,
+                            (box.MinPoint.Y + box.MaxPoint.Y) / 2.0,
+                            (box.MinPoint.Z + box.MaxPoint.Z) / 2.0));
+                    }
+                    catch
+                    {
+                        // Pomiń Text bez odczytywalnego bounding boxa - to tylko
+                        // podgląd "czy będzie kolizja", nie krytyczna operacja.
+                    }
+                }
+            }
+
+            var prospective = new List<(double x, double y)>();
+            foreach (var rd in radiusDimensions)
+            {
+                try
+                {
+                    double currentDistance = rd.Distance;
+                    double magnitude = Math.Abs(currentDistance) + offsetMm;
+                    double signedD = oppositeDirection ? -magnitude : magnitude;
+
+                    var (dirX, dirY, referencePoint) = GetOutwardDirection(rd);
+                    double candidateX = referencePoint.X + dirX * signedD;
+                    double candidateY = referencePoint.Y + dirY * signedD;
+                    prospective.Add((candidateX, candidateY));
+                }
+                catch
+                {
+                    // Pomiń pojedynczy wymiar, którego nie da się policzyć -
+                    // to tylko podgląd, prawdziwy ruch i tak obsłuży błędy.
+                }
+            }
+
+            for (int i = 0; i < prospective.Count; i++)
+            {
+                foreach (var tp in textPoints)
+                {
+                    if (DistanceBetween(prospective[i].x, prospective[i].y, tp.X, tp.Y) < MinClearanceMm)
+                    {
+                        return true;
+                    }
+                }
+
+                for (int j = i + 1; j < prospective.Count; j++)
+                {
+                    if (DistanceBetween(prospective[i].x, prospective[i].y, prospective[j].x, prospective[j].y) < MinClearanceMm)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
