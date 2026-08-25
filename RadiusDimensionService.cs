@@ -136,7 +136,14 @@ namespace RadiusDimensionMover
                 {
                     double previousDistance = rd.Distance;
 
+                    // [DIAG] Tymczasowe logowanie do zdiagnozowania zgłoszenia
+                    // "przesunęło na środek, dwa wymiary nachodzą na siebie" -
+                    // pokazuje surowe współrzędne, żeby sprawdzić czy kierunek
+                    // (center - arcPoint) jest tu poprawny.
+                    log($"  [DIAG] ArcPoint1=({rd.ArcPoint1.X:F1},{rd.ArcPoint1.Y:F1})  ArcPoint2=({rd.ArcPoint2.X:F1},{rd.ArcPoint2.Y:F1})  ArcPoint3=({rd.ArcPoint3.X:F1},{rd.ArcPoint3.Y:F1})");
+
                     var (dirX, dirY, referencePoint) = GetOutwardDirection(rd);
+                    log($"  [DIAG] referencePoint(ArcPoint2)=({referencePoint.X:F1},{referencePoint.Y:F1})  kierunek(dirX,dirY)=({dirX:F3},{dirY:F3})");
 
                     double chosenDistance = StartDistanceMm;
                     bool foundClear = false;
@@ -178,7 +185,7 @@ namespace RadiusDimensionMover
                     }
 
                     double newDistance = oppositeDirection ? -chosenDistance : chosenDistance;
-                    log($"  Wymiar R: {previousDistance:F1} -> {newDistance:F1} (dystans {chosenDistance:F1}mm{(foundClear ? ", wolne miejsce" : ", brak wolnego miejsca w limicie")}).");
+                    log($"  Wymiar R: {previousDistance:F1} -> {newDistance:F1} (dystans {chosenDistance:F1}mm{(foundClear ? ", wolne miejsce" : ", brak wolnego miejsca w limicie")}). [DIAG] szacowana pozycja tekstu=({finalX:F1},{finalY:F1})");
 
                     thisMoveHistory.Add((rd, previousDistance));
                     rd.Distance = newDistance;
