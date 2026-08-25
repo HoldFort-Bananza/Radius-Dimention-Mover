@@ -30,9 +30,6 @@ namespace RadiusDimensionMover
         // podfolderze "logs" obok pliku .exe.
         private readonly string _logFilePath;
 
-        private NumericUpDown _offsetInput;
-        private Label _offsetLabel;
-        private CheckBox _advancedCheckBox;
         private Button _toggleDirectionButton;
         private Button _runButton;
         private Button _undoButton;
@@ -46,7 +43,7 @@ namespace RadiusDimensionMover
 
             Text = "Radius Dimension Mover – Tekla 2025";
             Width = 520;
-            Height = 540;
+            Height = 500;
             StartPosition = FormStartPosition.CenterScreen;
 
             // --- Wiersz 1: aktualny kierunek + przycisk odwracający ---
@@ -70,59 +67,24 @@ namespace RadiusDimensionMover
             };
             _toggleDirectionButton.Click += ToggleDirectionButton_Click;
 
-            // --- Wiersz 2: tryb zaawansowany (ręczny krok) - domyślnie wyłączony,
-            // program sam wtedy dobiera odległość i unika kolizji ---
-            _advancedCheckBox = new CheckBox
-            {
-                Text = "Zaawansowane: własny krok",
-                Left = 15,
-                Top = 60,
-                Width = 220,
-                Checked = false
-            };
-            _advancedCheckBox.CheckedChanged += AdvancedCheckBox_CheckedChanged;
-
-            _offsetLabel = new Label
-            {
-                Text = "Krok [mm]:",
-                Left = 250,
-                Top = 62,
-                Width = 70,
-                Enabled = false
-            };
-
-            _offsetInput = new NumericUpDown
-            {
-                Left = 325,
-                Top = 58,
-                Width = 80,
-                Minimum = 1,
-                Maximum = 5000,
-                // Podniesiony domyślny krok (było 20) - na podstawie testów
-                // na żywych rysunkach (Einzelteil Träger) 15-20mm często
-                // nie wystarczało, żeby ominąć sąsiednie wymiary/teksty.
-                Value = 40,
-                Enabled = false
-            };
-
-            // --- Wiersz 3: Przesuń - domyślnie auto (sam dobiera odległość,
-            // omija kolizje); przy zaznaczonym checkboxie używa Krok [mm] ---
+            // --- Wiersz 2: Przesuń - zawsze auto, sam dobiera odległość i
+            // omija kolizje z tekstem oraz z innymi wymiarami R ---
             _runButton = new Button
             {
-                Text = "Przesuń wszystkie wymiary R (auto)",
+                Text = "Przesuń wszystkie wymiary R (unikaj kolizji)",
                 Left = 15,
-                Top = 100,
+                Top = 58,
                 Width = 470,
                 Height = 35
             };
             _runButton.Click += RunButton_Click;
 
-            // --- Wiersz 4: Cofnij ---
+            // --- Wiersz 3: Cofnij ---
             _undoButton = new Button
             {
                 Text = "Cofnij",
                 Left = 15,
-                Top = 140,
+                Top = 100,
                 Width = 470,
                 Height = 32
             };
@@ -131,7 +93,7 @@ namespace RadiusDimensionMover
             _statusLabel = new Label
             {
                 Left = 15,
-                Top = 182,
+                Top = 142,
                 Width = 470,
                 Height = 20,
                 ForeColor = Color.DarkSlateGray
@@ -140,7 +102,7 @@ namespace RadiusDimensionMover
             _logBox = new TextBox
             {
                 Left = 15,
-                Top = 207,
+                Top = 167,
                 Width = 470,
                 Height = 260,
                 Multiline = true,
@@ -151,9 +113,6 @@ namespace RadiusDimensionMover
 
             Controls.Add(_directionLabel);
             Controls.Add(_toggleDirectionButton);
-            Controls.Add(_advancedCheckBox);
-            Controls.Add(_offsetLabel);
-            Controls.Add(_offsetInput);
             Controls.Add(_runButton);
             Controls.Add(_undoButton);
             Controls.Add(_statusLabel);
@@ -194,16 +153,6 @@ namespace RadiusDimensionMover
             }
         }
 
-        private void AdvancedCheckBox_CheckedChanged(object sender, EventArgs e)
-        {
-            bool advanced = _advancedCheckBox.Checked;
-            _offsetLabel.Enabled = advanced;
-            _offsetInput.Enabled = advanced;
-            _runButton.Text = advanced
-                ? "Przesuń wszystkie wymiary R (+krok)"
-                : "Przesuń wszystkie wymiary R (auto)";
-        }
-
         private void ToggleDirectionButton_Click(object sender, EventArgs e)
         {
             // Samo kliknięcie TYLKO zmienia stan - żadnego wywołania do Tekli,
@@ -232,42 +181,29 @@ namespace RadiusDimensionMover
             }
 
             _logBox.Clear();
-            bool advancedForHeader = _advancedCheckBox.Checked;
-            Log($"===== {DateTime.Now:HH:mm:ss} PRZESUŃ - tryb: " +
-                (advancedForHeader ? $"zaawansowane (krok={_offsetInput.Value}mm)" : "auto") +
-                $", kierunek: {(_oppositeDirection ? "przeciwny" : "normalny")} =====");
+            Log($"===== {DateTime.Now:HH:mm:ss} PRZESUŃ - kierunek: {(_oppositeDirection ? "przeciwny" : "normalny")} =====");
             SetButtonsEnabled(false);
             _statusLabel.Text = "Przetwarzanie...";
 
             try
             {
-                bool advanced = _advancedCheckBox.Checked;
-                MoveResult result;
+                var plan = _service.PlanAutoPlace(_oppositeDirection, Log);
 
-                if (advanced)
+                if (!plan.AllClear)
                 {
-                    double offsetMm = (double)_offsetInput.Value;
+                    bool proceed = ShowCollisionConfirm(
+                        "Dla co najmniej jednego wymiaru R nie znaleziono w pełni wolnego miejsca w sprawdzonym " +
+                        "zakresie - jego tekst może nachodzić na inny element rysunku.\n\n" +
+                        "Kontynuować mimo to, czy anulować?");
 
-                    if (_service.WouldManualMoveCollide(offsetMm, _oppositeDirection))
+                    if (!proceed)
                     {
-                        bool proceed = ShowCollisionConfirm(
-                            "Przy wpisanym kroku co najmniej jeden tekst wymiaru R będzie nachodził na inny " +
-                            "element rysunku (inny tekst albo inny wymiar R).\n\n" +
-                            "Kontynuować mimo to, czy anulować i np. zmniejszyć krok / użyć trybu auto?");
-
-                        if (!proceed)
-                        {
-                            _statusLabel.Text = "Anulowano - kolizja przy wpisanym kroku.";
-                            return;
-                        }
+                        _statusLabel.Text = "Anulowano - nie znaleziono w pełni wolnego miejsca.";
+                        return;
                     }
+                }
 
-                    result = _service.MoveAllRadiusDimensionsOutward(offsetMm, _oppositeDirection, Log);
-                }
-                else
-                {
-                    result = _service.AutoPlaceRadiusDimensionsAvoidingText(_oppositeDirection, Log);
-                }
+                var result = _service.ApplyAutoPlace(plan, Log);
 
                 // Po udanym przesunięciu blokujemy "Przesuń", żeby kolejne
                 // kliknięcia (np. z niecierpliwości, gdy Tekla chwilę nie
@@ -386,7 +322,6 @@ namespace RadiusDimensionMover
         private void SetButtonsEnabled(bool enabled)
         {
             _toggleDirectionButton.Enabled = enabled;
-            _advancedCheckBox.Enabled = enabled;
             // "Przesuń" wraca do stanu aktywnego tylko jeśli nie jest
             // zablokowany przez _canRun (czyli dopóki nie kliknięto "Cofnij"
             // po ostatnim udanym przesunięciu).
