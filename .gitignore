@@ -16,6 +16,10 @@ bin/x64/Debug/net48/*
 !bin/x64/Debug/net48/RadiusDimensionMover.exe.config
 !bin/x64/Debug/net48/RadiusDimensionMover.pdb
 
+## Inno Setup build output - the compiled installer is attached to
+## GitHub Releases instead, not tracked in git
+installer/output/
+
 ## Rider / VSCode
 .idea/
 .vscode/

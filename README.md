@@ -53,12 +53,18 @@ przy uruchomieniu dostaniesz błąd ładowania assembly. Te biblioteki
 i ich licencja (EULA) wprost zabrania redystrybucji stronom trzecim - a to
 repozytorium jest publiczne.
 
-**Rozwiązanie:** jeśli masz zainstalowaną i zalicencjonowaną Teklę Structures
-2025, zbuduj program samodzielnie (patrz "Budowanie" poniżej) - `dotnet build`
-/ Visual Studio automatycznie pobierze te biblioteki z publicznych paczek
-NuGet Trimble i skopiuje je obok Twojego własnego `.exe`, w pełni zgodnie
-z licencją (pod Twoim własnym kontem/licencją Tekli). To zajmuje dosłownie
-minutę i nie wymaga edycji kodu.
+**Najprostsze rozwiązanie: instalator.** W release'u jest też
+`RadiusDimensionMover-Setup-vX.Y.exe` - uruchamiasz go, akceptujesz EULA
+Trimble/Tekla (pokazaną jako ekran licencji), a instalator sam pobiera
+brakujące biblioteki świeżo z publicznego NuGet (nuget.org) na Twój komputer,
+pod Twoją własną licencją Tekli - dokładnie to samo, co zrobiłoby `dotnet
+restore`, tylko zautomatyzowane. Wymaga internetu podczas instalacji i
+zalicencjonowanej Tekli Structures 2025 na tym komputerze. Źródła instalatora
+są w folderze `installer/` (Inno Setup - `setup.iss` + `fetch-dependencies.ps1`).
+
+**Alternatywa: zbuduj sam.** Jeśli wolisz nie ufać gotowemu instalatorowi,
+zbuduj program z kodu źródłowego (patrz "Budowanie" poniżej) - `dotnet build`
+/ Visual Studio automatycznie pobierze te same biblioteki.
 
 ## Budowanie
 
