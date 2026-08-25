@@ -39,9 +39,26 @@ trzeba – "Cofnij" i próbujesz ponownie z innym krokiem.
 
 ## Wymagania
 
-- Tekla Structures 2025 zainstalowana na tym samym komputerze.
+- Tekla Structures 2025 zainstalowana na tym samym komputerze (z ważną licencją).
 - Visual Studio (2019/2022) z obciążeniem ".NET desktop development".
 - .NET Framework 4.8 Developer Pack.
+
+## WAŻNE: samo `.exe` z GitHub Release NIE wystarczy
+
+Plik `RadiusDimensionMover.exe` dołączony do release'a **wymaga obok siebie**
+kilku bibliotek Tekla Open API (`Tekla.Structures.dll`,
+`Tekla.Structures.Drawing.dll` itd., w wersji dokładnie 2025.0.0.0) - bez nich
+przy uruchomieniu dostaniesz błąd ładowania assembly. Te biblioteki
+**celowo nie są dołączone do repo/release'u**, bo są własnością Trimble/Tekla
+i ich licencja (EULA) wprost zabrania redystrybucji stronom trzecim - a to
+repozytorium jest publiczne.
+
+**Rozwiązanie:** jeśli masz zainstalowaną i zalicencjonowaną Teklę Structures
+2025, zbuduj program samodzielnie (patrz "Budowanie" poniżej) - `dotnet build`
+/ Visual Studio automatycznie pobierze te biblioteki z publicznych paczek
+NuGet Trimble i skopiuje je obok Twojego własnego `.exe`, w pełni zgodnie
+z licencją (pod Twoim własnym kontem/licencją Tekli). To zajmuje dosłownie
+minutę i nie wymaga edycji kodu.
 
 ## Budowanie
 
