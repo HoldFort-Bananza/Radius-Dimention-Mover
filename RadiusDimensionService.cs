@@ -270,6 +270,11 @@ namespace RadiusDimensionMover
             {
                 try
                 {
+                    // [DIAG] Sprawdzamy, czy ArcPoint1/2/3 dają jakikolwiek
+                    // sygnał zwrotny po zmianie Distance (czyli czy da się
+                    // ich użyć zamiast zgadywania kierunku z góry).
+                    log($"  [DIAG] PRZED: ArcPoint1=({entry.Dim.ArcPoint1.X:F2},{entry.Dim.ArcPoint1.Y:F2}) ArcPoint2=({entry.Dim.ArcPoint2.X:F2},{entry.Dim.ArcPoint2.Y:F2}) ArcPoint3=({entry.Dim.ArcPoint3.X:F2},{entry.Dim.ArcPoint3.Y:F2}) Distance={entry.Dim.Distance:F3}");
+
                     thisMoveHistory.Add((entry.Dim, entry.PreviousDistance));
                     entry.Dim.Distance = entry.NewDistance;
 
@@ -277,6 +282,8 @@ namespace RadiusDimensionMover
                     {
                         result.MovedCount++;
                         appliedNow.Add((entry.Dim, entry.NewDistance));
+
+                        log($"  [DIAG] PO Modify(): ArcPoint1=({entry.Dim.ArcPoint1.X:F2},{entry.Dim.ArcPoint1.Y:F2}) ArcPoint2=({entry.Dim.ArcPoint2.X:F2},{entry.Dim.ArcPoint2.Y:F2}) ArcPoint3=({entry.Dim.ArcPoint3.X:F2},{entry.Dim.ArcPoint3.Y:F2}) Distance={entry.Dim.Distance:F3}");
                     }
                     else
                     {
@@ -291,6 +298,18 @@ namespace RadiusDimensionMover
 
             activeDrawing.CommitChanges();
             log("Zapisano zmiany w rysunku (CommitChanges).");
+
+            foreach (var entry in plan.Entries)
+            {
+                try
+                {
+                    log($"  [DIAG] PO CommitChanges: ArcPoint1=({entry.Dim.ArcPoint1.X:F2},{entry.Dim.ArcPoint1.Y:F2}) ArcPoint2=({entry.Dim.ArcPoint2.X:F2},{entry.Dim.ArcPoint2.Y:F2}) ArcPoint3=({entry.Dim.ArcPoint3.X:F2},{entry.Dim.ArcPoint3.Y:F2}) Distance={entry.Dim.Distance:F3}");
+                }
+                catch (Exception ex)
+                {
+                    log("  [DIAG] Nie udało się odczytać ArcPoint po CommitChanges - błąd: " + ex.Message);
+                }
+            }
 
             _undoStack.Push(thisMoveHistory);
             _lastAppliedMove = appliedNow;
