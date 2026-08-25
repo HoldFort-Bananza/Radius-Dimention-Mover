@@ -30,6 +30,7 @@ namespace RadiusDimensionMover
         // podfolderze "logs" obok pliku .exe.
         private readonly string _logFilePath;
 
+        private NumericUpDown _offsetInput;
         private Button _toggleDirectionButton;
         private Button _runButton;
         private Button _undoButton;
@@ -67,14 +68,34 @@ namespace RadiusDimensionMover
             };
             _toggleDirectionButton.Click += ToggleDirectionButton_Click;
 
-            // --- Wiersz 2: Przesuń - zawsze auto, sam dobiera odległość i
-            // omija kolizje z tekstem oraz z innymi wymiarami R ---
+            // --- Wiersz 2: krok przesunięcia + przycisk Przesuń (razem, obok siebie) ---
+            var offsetLabel = new Label
+            {
+                Text = "Krok [mm]:",
+                Left = 15,
+                Top = 62,
+                Width = 75
+            };
+
+            _offsetInput = new NumericUpDown
+            {
+                Left = 95,
+                Top = 58,
+                Width = 80,
+                Minimum = 1,
+                Maximum = 5000,
+                // Krok jest w mm NA PAPIERZE (przeliczane przez skalę widoku
+                // w RadiusDimensionService) - niezależnie od skali rysunku
+                // powinien dawać przewidywalny, widoczny ruch.
+                Value = 40
+            };
+
             _runButton = new Button
             {
-                Text = "Przesuń wszystkie wymiary R (unikaj kolizji)",
-                Left = 15,
-                Top = 58,
-                Width = 470,
+                Text = "Przesuń wszystkie wymiary R (+krok)",
+                Left = 185,
+                Top = 56,
+                Width = 300,
                 Height = 35
             };
             _runButton.Click += RunButton_Click;
@@ -113,6 +134,8 @@ namespace RadiusDimensionMover
 
             Controls.Add(_directionLabel);
             Controls.Add(_toggleDirectionButton);
+            Controls.Add(offsetLabel);
+            Controls.Add(_offsetInput);
             Controls.Add(_runButton);
             Controls.Add(_undoButton);
             Controls.Add(_statusLabel);
@@ -181,29 +204,14 @@ namespace RadiusDimensionMover
             }
 
             _logBox.Clear();
-            Log($"===== {DateTime.Now:HH:mm:ss} PRZESUŃ - kierunek: {(_oppositeDirection ? "przeciwny" : "normalny")} =====");
+            double offsetMm = (double)_offsetInput.Value;
+            Log($"===== {DateTime.Now:HH:mm:ss} PRZESUŃ - krok: {offsetMm}mm, kierunek: {(_oppositeDirection ? "przeciwny" : "normalny")} =====");
             SetButtonsEnabled(false);
             _statusLabel.Text = "Przetwarzanie...";
 
             try
             {
-                var plan = _service.PlanAutoPlace(_oppositeDirection, Log);
-
-                if (!plan.AllClear)
-                {
-                    bool proceed = ShowCollisionConfirm(
-                        "Dla co najmniej jednego wymiaru R nie znaleziono w pełni wolnego miejsca w sprawdzonym " +
-                        "zakresie - jego tekst może nachodzić na inny element rysunku.\n\n" +
-                        "Kontynuować mimo to, czy anulować?");
-
-                    if (!proceed)
-                    {
-                        _statusLabel.Text = "Anulowano - nie znaleziono w pełni wolnego miejsca.";
-                        return;
-                    }
-                }
-
-                var result = _service.ApplyAutoPlace(plan, Log);
+                var result = _service.MoveAllRadiusDimensionsOutward(offsetMm, _oppositeDirection, Log);
 
                 // Po udanym przesunięciu blokujemy "Przesuń", żeby kolejne
                 // kliknięcia (np. z niecierpliwości, gdy Tekla chwilę nie
@@ -211,7 +219,7 @@ namespace RadiusDimensionMover
                 // dalej, trzeba świadomie kliknąć "Cofnij" i spróbować ponownie.
                 _canRun = false;
 
-                _statusLabel.Text = $"Gotowe. Przesunięto {result.MovedCount} z {result.TotalCount} wymiarów R. Żeby przesunąć ponownie, najpierw kliknij Cofnij.";
+                _statusLabel.Text = $"Gotowe. Przesunięto {result.MovedCount} z {result.TotalCount} wymiarów R. Sprawdź wizualnie w Tekli - jeśli trzeba dalej, kliknij Cofnij i spróbuj ponownie z innym krokiem.";
             }
             catch (Exception ex)
             {
@@ -222,63 +230,6 @@ namespace RadiusDimensionMover
             finally
             {
                 SetButtonsEnabled(true);
-            }
-        }
-
-        /// <summary>
-        /// Modalne ostrzeżenie o kolizji z opcją "Anuluj" / "Kontynuuj mimo to".
-        /// Enter/Esc domyślnie trafiają na "Anuluj" - to bezpieczniejsza
-        /// domyślna opcja niż przypadkowe przebicie się przez ostrzeżenie.
-        /// </summary>
-        private bool ShowCollisionConfirm(string message)
-        {
-            using (var dialog = new Form())
-            {
-                dialog.Text = "Uwaga - możliwa kolizja";
-                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
-                dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.MinimizeBox = false;
-                dialog.MaximizeBox = false;
-                dialog.ShowInTaskbar = false;
-                dialog.Width = 420;
-                dialog.Height = 210;
-
-                var label = new Label
-                {
-                    Text = message,
-                    Left = 15,
-                    Top = 15,
-                    Width = 375,
-                    Height = 110
-                };
-
-                var cancelButton = new Button
-                {
-                    Text = "Anuluj",
-                    Left = 15,
-                    Top = 135,
-                    Width = 120,
-                    Height = 32,
-                    DialogResult = DialogResult.Cancel
-                };
-
-                var continueButton = new Button
-                {
-                    Text = "Kontynuuj mimo to",
-                    Left = 265,
-                    Top = 135,
-                    Width = 125,
-                    Height = 32,
-                    DialogResult = DialogResult.OK
-                };
-
-                dialog.Controls.Add(label);
-                dialog.Controls.Add(cancelButton);
-                dialog.Controls.Add(continueButton);
-                dialog.AcceptButton = cancelButton;
-                dialog.CancelButton = cancelButton;
-
-                return dialog.ShowDialog(this) == DialogResult.OK;
             }
         }
 
