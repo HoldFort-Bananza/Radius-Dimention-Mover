@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Tekla Open API 2025 działa na .NET Framework 4.8 -->
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>RadiusDimensionMover</RootNamespace>
+    <AssemblyName>RadiusDimensionMover</AssemblyName>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Tekla Open API jest teraz dystrybuowane przez NuGet (nuget.org),
+      NIE trzeba już ręcznie wskazywać plików .dll z folderu instalacji Tekli.
+      Wersję dopasuj do swojej wersji Tekli - masz 2025 SP10, więc zostaw 2025.0.x
+      (jeśli NuGet pokaże nowszy patch np. 2025.0.4, spokojnie można go użyć).
+    -->
+    <PackageReference Include="Tekla.Structures" Version="2025.0.0" />
+    <PackageReference Include="Tekla.Structures.Drawing" Version="2025.0.0" />
+
+    <!--
+      WYMAGANE dla Tekla Structures 2024/2025 (architektura "gacless").
+      Bez tego pakietu plik .exe.config nie jest poprawnie generowany
+      i DrawingHandler.GetConnectionStatus() zawsze zwraca false,
+      nawet gdy Tekla jest uruchomiona z otwartym modelem.
+      Zobacz: https://developer.tekla.com/documentation/check-connection-between-application-and-tekla-structures
+    -->
+    <PackageReference Include="TSAppConfigPatcherTask" Version="2.1.3" />
+  </ItemGroup>
+
+</Project>
