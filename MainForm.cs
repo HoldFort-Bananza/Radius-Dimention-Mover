@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 
 namespace RadiusDimensionMover
@@ -23,6 +24,12 @@ namespace RadiusDimensionMover
         // wylatuje daleko poza rysunek zamiast przesunąć się raz o krok.
         private bool _canRun = true;
 
+        // Ścieżka do pliku logu tej sesji - zapisywana automatycznie, żeby
+        // nie trzeba było ręcznie kopiować zawartości okna logu przy
+        // zgłaszaniu problemu. Jeden plik na uruchomienie programu, w
+        // podfolderze "logs" obok pliku .exe.
+        private readonly string _logFilePath;
+
         private NumericUpDown _offsetInput;
         private Label _offsetLabel;
         private CheckBox _advancedCheckBox;
@@ -35,6 +42,8 @@ namespace RadiusDimensionMover
 
         public MainForm()
         {
+            _logFilePath = InitLogFile();
+
             Text = "Radius Dimension Mover – Tekla 2025";
             Width = 520;
             Height = 540;
@@ -154,6 +163,11 @@ namespace RadiusDimensionMover
             // wymiar w Tekli: użytkownik musi kliknąć z powrotem na to okno,
             // żeby móc znów użyć "Przesuń" - to właśnie odpala Activated.
             Activated += MainForm_Activated;
+
+            Log($"===== Start sesji {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====");
+            Log(_logFilePath != null
+                ? "Log tej sesji zapisywany do pliku: " + _logFilePath
+                : "UWAGA: nie udało się utworzyć pliku logu - log dostępny tylko w tym oknie.");
         }
 
         private void MainForm_Activated(object sender, EventArgs e)
@@ -218,6 +232,10 @@ namespace RadiusDimensionMover
             }
 
             _logBox.Clear();
+            bool advancedForHeader = _advancedCheckBox.Checked;
+            Log($"===== {DateTime.Now:HH:mm:ss} PRZESUŃ - tryb: " +
+                (advancedForHeader ? $"zaawansowane (krok={_offsetInput.Value}mm)" : "auto") +
+                $", kierunek: {(_oppositeDirection ? "przeciwny" : "normalny")} =====");
             SetButtonsEnabled(false);
             _statusLabel.Text = "Przetwarzanie...";
 
@@ -331,6 +349,7 @@ namespace RadiusDimensionMover
         private void UndoButton_Click(object sender, EventArgs e)
         {
             _logBox.Clear();
+            Log($"===== {DateTime.Now:HH:mm:ss} COFNIJ =====");
             SetButtonsEnabled(false);
             _statusLabel.Text = "Cofanie...";
 
@@ -375,9 +394,45 @@ namespace RadiusDimensionMover
             _undoButton.Enabled = enabled;
         }
 
+        /// <summary>
+        /// Tworzy podfolder "logs" obok pliku .exe i zwraca ścieżkę do
+        /// nowego pliku logu na tę sesję (jedno uruchomienie programu =
+        /// jeden plik, wszystkie akcje dopisywane po kolei). Jeśli z
+        /// jakiegoś powodu nie da się utworzyć folderu/pliku (np. brak
+        /// uprawnień), program ma dalej działać - po prostu bez logu do pliku.
+        /// </summary>
+        private static string InitLogFile()
+        {
+            try
+            {
+                string logDir = Path.Combine(Application.StartupPath, "logs");
+                Directory.CreateDirectory(logDir);
+                return Path.Combine(logDir, $"session_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private void Log(string message)
         {
             _logBox.AppendText(message + Environment.NewLine);
+
+            if (_logFilePath == null)
+            {
+                return;
+            }
+
+            try
+            {
+                File.AppendAllText(_logFilePath, message + Environment.NewLine);
+            }
+            catch
+            {
+                // Błąd zapisu do pliku loga nie może przerwać działania
+                // programu - to tylko dodatkowa wygoda, nie krytyczna funkcja.
+            }
         }
     }
 }
