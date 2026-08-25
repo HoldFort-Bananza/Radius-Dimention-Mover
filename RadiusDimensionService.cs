@@ -302,6 +302,12 @@ namespace RadiusDimensionMover
                     double magnitude = Math.Abs(currentDistance) + offsetMm;
                     double newDistance = oppositeDirection ? -magnitude : magnitude;
 
+                    // [DIAG] Tymczasowe logowanie do zdiagnozowania zgłoszenia
+                    // "nawet 1mm przesuwa bardzo dużo" - pokazuje dokładne
+                    // wartości Distance z API Tekli przed/po, żeby sprawdzić
+                    // czy to kwestia jednostek/skali rysunku, czy błąd w kodzie.
+                    log($"  [DIAG] Distance przed = {currentDistance:F3} (jednostka wg API Tekli), krok wpisany = {offsetMm:F3} mm, Distance po = {newDistance:F3}");
+
                     thisMoveHistory.Add((rd, currentDistance));
                     rd.Distance = newDistance;
 
