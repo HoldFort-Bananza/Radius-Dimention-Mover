@@ -26,6 +26,7 @@ namespace RadiusDimensionMover
         private NumericUpDown _offsetInput;
         private Button _toggleDirectionButton;
         private Button _runButton;
+        private Button _autoPlaceButton;
         private Button _undoButton;
         private Label _directionLabel;
         private TextBox _logBox;
@@ -35,7 +36,7 @@ namespace RadiusDimensionMover
         {
             Text = "Radius Dimension Mover – Tekla 2025";
             Width = 520;
-            Height = 500;
+            Height = 540;
             StartPosition = FormStartPosition.CenterScreen;
 
             // --- Wiersz 1: aktualny kierunek + przycisk odwracający ---
@@ -91,12 +92,23 @@ namespace RadiusDimensionMover
             };
             _runButton.Click += RunButton_Click;
 
-            // --- Wiersz 3: Cofnij ---
+            // --- Wiersz 3: auto-rozstawianie (unika kolizji z tekstami i innymi wymiarami R) ---
+            _autoPlaceButton = new Button
+            {
+                Text = "Auto-rozstaw wymiary R (unikaj kolizji)",
+                Left = 15,
+                Top = 100,
+                Width = 470,
+                Height = 32
+            };
+            _autoPlaceButton.Click += AutoPlaceButton_Click;
+
+            // --- Wiersz 4: Cofnij ---
             _undoButton = new Button
             {
                 Text = "Cofnij",
                 Left = 15,
-                Top = 100,
+                Top = 140,
                 Width = 470,
                 Height = 32
             };
@@ -105,7 +117,7 @@ namespace RadiusDimensionMover
             _statusLabel = new Label
             {
                 Left = 15,
-                Top = 142,
+                Top = 182,
                 Width = 470,
                 Height = 20,
                 ForeColor = Color.DarkSlateGray
@@ -114,7 +126,7 @@ namespace RadiusDimensionMover
             _logBox = new TextBox
             {
                 Left = 15,
-                Top = 167,
+                Top = 207,
                 Width = 470,
                 Height = 260,
                 Multiline = true,
@@ -128,6 +140,7 @@ namespace RadiusDimensionMover
             Controls.Add(offsetLabel);
             Controls.Add(_offsetInput);
             Controls.Add(_runButton);
+            Controls.Add(_autoPlaceButton);
             Controls.Add(_undoButton);
             Controls.Add(_statusLabel);
             Controls.Add(_logBox);
@@ -152,7 +165,8 @@ namespace RadiusDimensionMover
                 {
                     _canRun = true;
                     _runButton.Enabled = true;
-                    _statusLabel.Text = "Wykryto ręczną zmianę wymiaru na rysunku – przycisk Przesuń odblokowany.";
+                    _autoPlaceButton.Enabled = true;
+                    _statusLabel.Text = "Wykryto ręczną zmianę wymiaru na rysunku – przyciski Przesuń/Auto-rozstaw odblokowane.";
                 }
             }
             catch
@@ -218,6 +232,39 @@ namespace RadiusDimensionMover
             }
         }
 
+        private void AutoPlaceButton_Click(object sender, EventArgs e)
+        {
+            if (!_canRun)
+            {
+                return;
+            }
+
+            _logBox.Clear();
+            SetButtonsEnabled(false);
+            _statusLabel.Text = "Przetwarzanie (auto-rozstawianie)...";
+
+            try
+            {
+                var result = _service.AutoPlaceRadiusDimensionsAvoidingText(_oppositeDirection, Log);
+
+                // Tak samo jak przy "Przesuń" - blokujemy oba przyciski
+                // przesuwające do czasu kliknięcia "Cofnij".
+                _canRun = false;
+
+                _statusLabel.Text = $"Gotowe. Auto-rozstawiono {result.MovedCount} z {result.TotalCount} wymiarów R. Żeby zrobić to ponownie, najpierw kliknij Cofnij.";
+            }
+            catch (Exception ex)
+            {
+                _statusLabel.Text = "Błąd – zobacz log.";
+                Log("BŁĄD: " + ex.Message);
+                Log(ex.StackTrace);
+            }
+            finally
+            {
+                SetButtonsEnabled(true);
+            }
+        }
+
         private void UndoButton_Click(object sender, EventArgs e)
         {
             _logBox.Clear();
@@ -257,10 +304,11 @@ namespace RadiusDimensionMover
         private void SetButtonsEnabled(bool enabled)
         {
             _toggleDirectionButton.Enabled = enabled;
-            // "Przesuń" wraca do stanu aktywnego tylko jeśli nie jest
-            // zablokowany przez _canRun (czyli dopóki nie kliknięto "Cofnij"
-            // po ostatnim udanym przesunięciu).
+            // "Przesuń" i "Auto-rozstaw" wracają do stanu aktywnego tylko
+            // jeśli nie są zablokowane przez _canRun (czyli dopóki nie
+            // kliknięto "Cofnij" po ostatnim udanym przesunięciu).
             _runButton.Enabled = enabled && _canRun;
+            _autoPlaceButton.Enabled = enabled && _canRun;
             _undoButton.Enabled = enabled;
         }
 

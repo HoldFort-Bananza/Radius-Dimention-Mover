@@ -47,27 +47,26 @@ namespace RadiusDimensionMover
         private const double MaxDistanceMm = 300.0;
 
         /// <summary>
-        /// EKSPERYMENTALNE: automatycznie rozstawia wszystkie wymiary R na
-        /// aktywnym rysunku tak, żeby (w przybliżeniu) nie kolidowały z
-        /// żadnym innym tekstem na arkuszu, bez pytania o wartość kroku.
+        /// Automatycznie rozstawia wszystkie wymiary R na aktywnym rysunku
+        /// tak, żeby (w przybliżeniu) nie kolidowały z żadnym innym tekstem
+        /// na arkuszu ANI ze sobą nawzajem, bez pytania o wartość kroku.
         ///
-        /// WAŻNE OGRANICZENIA - przeczytaj zanim zgłosisz "nie działa":
+        /// WAŻNE OGRANICZENIA:
         /// 1. Tekla Open API nie udostępnia wprost pozycji tekstu wymiaru R
         ///    (RadiusDimension nie ma bounding boxa ani punktu wstawienia).
         ///    Pozycję tekstu SZACUJEMY geometrycznie na podstawie ArcPoint1/2/3
         ///    (środek okręgu wyliczony z tych trzech punktów) i aktualnego
         ///    Distance - to jest przybliżenie, nie odczyt z API.
-        /// 2. Kolizje sprawdzamy TYLKO względem punktów wstawienia obiektów
-        ///    Text na arkuszu (te akurat mają udokumentowany bounding box).
-        ///    Nie sprawdzamy kolizji z innymi wymiarami R, liniami konturu,
+        /// 2. Kolizje sprawdzamy względem punktów wstawienia obiektów Text
+        ///    na arkuszu (te mają udokumentowany bounding box) oraz względem
+        ///    szacowanych pozycji INNYCH wymiarów R już rozstawionych w tym
+        ///    samym przebiegu. Nie sprawdzamy kolizji z liniami konturu,
         ///    strzałkami itd. - one nie mają bounding boxa w API.
-        /// 3. Wymaga sprawdzenia na żywym rysunku. Jeśli plik się nie skompiluje
-        ///    (np. inna nazwa właściwości bounding boxa niż zgadnięta), prześlij
-        ///    treść błędu kompilacji - poprawka będzie szybka.
         /// </summary>
         public MoveResult AutoPlaceRadiusDimensionsAvoidingText(bool oppositeDirection, Action<string> log)
         {
             var thisMoveHistory = new List<(RadiusDimension, double)>();
+            var appliedNow = new List<(RadiusDimension, double)>();
 
             var result = new MoveResult();
 
@@ -137,37 +136,14 @@ namespace RadiusDimensionMover
                 {
                     double previousDistance = rd.Distance;
 
-                    // --- LOGOWANIE DIAGNOSTYCZNE ---
-                    // Cel: zebrać realne dane z żywego rysunku, żeby sprawdzić,
-                    // czy założenia geometryczne (ArcPoint2 = punkt na łuku,
-                    // kierunek center->ArcPoint2 = kierunek "na zewnątrz")
-                    // faktycznie się zgadzają z tym, co widać na ekranie.
-                    // Po teście prześlij te linie z logu z powrotem.
-                    log($"  [DIAG] ArcPoint1=({rd.ArcPoint1.X:F1},{rd.ArcPoint1.Y:F1},{rd.ArcPoint1.Z:F1})");
-                    log($"  [DIAG] ArcPoint2=({rd.ArcPoint2.X:F1},{rd.ArcPoint2.Y:F1},{rd.ArcPoint2.Z:F1})");
-                    log($"  [DIAG] ArcPoint3=({rd.ArcPoint3.X:F1},{rd.ArcPoint3.Y:F1},{rd.ArcPoint3.Z:F1})");
-                    log($"  [DIAG] Distance przed zmianą = {previousDistance:F1}");
-
                     Point center = TryGetCircleCenter(rd.ArcPoint1, rd.ArcPoint2, rd.ArcPoint3);
                     Point referencePoint = rd.ArcPoint2;
-
-                    if (center == null)
-                    {
-                        log("  [DIAG] Środek okręgu NIE wyliczony (punkty współliniowe lub błąd) - użyto domyślnego kierunku (1,0).");
-                    }
-                    else
-                    {
-                        log($"  [DIAG] Wyliczony środek okręgu = ({center.X:F1},{center.Y:F1})");
-                    }
 
                     double dirX = 1.0, dirY = 0.0;
                     if (center != null)
                     {
-                        // POPRAWKA (na podstawie porównania danych diagnostycznych
-                        // ze screenshotem "Einzelteil Träger"): kierunek, w którym
-                        // faktycznie ucieka tekst R-wymiaru, to (center - arcPoint),
-                        // NIE (arcPoint - center) jak było wcześniej. Wcześniejsza
-                        // wersja liczyła kierunek dokładnie odwrotnie.
+                        // Kierunek, w którym faktycznie ucieka tekst R-wymiaru,
+                        // to (center - arcPoint) - sprawdzone na żywym rysunku.
                         double vx = center.X - referencePoint.X;
                         double vy = center.Y - referencePoint.Y;
                         double len = Math.Sqrt(vx * vx + vy * vy);
@@ -177,10 +153,10 @@ namespace RadiusDimensionMover
                             dirY = vy / len;
                         }
                     }
-                    log($"  [DIAG] Kierunek na zewnątrz (dirX,dirY) = ({dirX:F3},{dirY:F3})");
 
                     double chosenDistance = StartDistanceMm;
                     bool foundClear = false;
+                    double finalX = referencePoint.X, finalY = referencePoint.Y;
 
                     for (double d = StartDistanceMm; d <= MaxDistanceMm; d += StepMm)
                     {
@@ -203,6 +179,8 @@ namespace RadiusDimensionMover
                         }
 
                         chosenDistance = d;
+                        finalX = candidateX;
+                        finalY = candidateY;
                         if (!collides)
                         {
                             foundClear = true;
@@ -216,7 +194,7 @@ namespace RadiusDimensionMover
                     }
 
                     double newDistance = oppositeDirection ? -chosenDistance : chosenDistance;
-                    log($"  [DIAG] Wybrany dystans = {chosenDistance:F1}, nowe Distance (z uwzgl. kierunku) = {newDistance:F1}");
+                    log($"  Wymiar R: {previousDistance:F1} -> {newDistance:F1} (dystans {chosenDistance:F1}mm{(foundClear ? ", wolne miejsce" : ", brak wolnego miejsca w limicie")}).");
 
                     thisMoveHistory.Add((rd, previousDistance));
                     rd.Distance = newDistance;
@@ -224,6 +202,12 @@ namespace RadiusDimensionMover
                     if (rd.Modify())
                     {
                         result.MovedCount++;
+                        appliedNow.Add((rd, newDistance));
+
+                        // Kolejne wymiary R w tym samym przebiegu mają też
+                        // omijać miejsce, które właśnie zajął ten - inaczej
+                        // dwa sąsiednie wymiary R mogłyby wylądować na sobie.
+                        otherTextPoints.Add(new Point(finalX, finalY, referencePoint.Z));
                     }
                     else
                     {
@@ -240,6 +224,7 @@ namespace RadiusDimensionMover
             log("Zapisano zmiany w rysunku (CommitChanges).");
 
             _undoStack.Push(thisMoveHistory);
+            _lastAppliedMove = appliedNow;
 
             return result;
         }
