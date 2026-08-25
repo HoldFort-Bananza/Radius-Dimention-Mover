@@ -1,7 +1,8 @@
 # Radius Dimension Mover – Tekla Structures 2025
 
-Osobna aplikacja (.exe) z jednym przyciskiem: przesuwa **wszystkie wymiary R**
-na aktywnym rysunku na zewnątrz elementu, żeby tekst nie wpadał w kontur rysunku.
+Osobna aplikacja (.exe) do szybkiego przesuwania **wszystkich wymiarów R**
+na aktywnym rysunku na zewnątrz elementu, żeby tekst nie wpadał w kontur
+rysunku ani w inne teksty/wymiary.
 
 ## Jak to działa
 
@@ -10,10 +11,31 @@ na aktywnym rysunku na zewnątrz elementu, żeby tekst nie wpadał w kontur rysu
    osobny plik .exe, a nie skrypt uruchamiany z wnętrza Tekli.
 2. Bierze aktualnie otwarty rysunek (`GetActiveDrawing()`).
 3. Przechodzi po wszystkich obiektach na arkuszu i wybiera te typu `RadiusDimension`.
-4. Dla każdego z nich liczy kierunek od środka promienia do punktu wymiaru
-   i przesuwa ten punkt dalej w tym samym kierunku o wpisaną w aplikacji
-   odległość w mm (domyślnie 100 mm).
+4. Dla każdego z nich zwiększa `Distance` o wpisany krok (mm **na papierze** –
+   przeliczane przez skalę widoku, `View.Attributes.Scale`, więc krok znaczy
+   to samo niezależnie od skali rysunku) w kierunku, który Tekla sama wybiera.
 5. Zapisuje zmiany (`Modify()` na każdym wymiarze + `CommitChanges()` na rysunku).
+
+Program **nie próbuje automatycznie omijać kolizji** z innymi tekstami czy
+wymiarami – Tekla Open API nie udostępnia żadnego sposobu odczytania ani
+przewidzenia rzeczywistej pozycji tekstu wymiaru R (`ArcPoint1/2/3` są stałe
+niezależnie od `Distance` – sprawdzone empirycznie), więc nie da się tego
+zbudować wiarygodnie. Klikasz "Przesuń", oceniasz wzrokowo w Tekli, i jeśli
+trzeba – "Cofnij" i próbujesz ponownie z innym krokiem.
+
+## Bezpieczniki
+
+- **Blokada po przesunięciu**: po udanym kliknięciu "Przesuń" przycisk się
+  blokuje, dopóki nie klikniesz "Cofnij" – chroni przed przypadkowym
+  wielokrotnym klikaniem (np. gdy Tekla na chwilę nie odpowiada), które
+  wypchnęłoby wymiar dużo dalej niż zamierzone.
+- **Wykrywanie ręcznej zmiany**: jeśli po przesunięciu ręcznie poprawisz
+  pozycję wymiaru w Tekli, program to zauważy przy powrocie do okna (fokus
+  okna) i sam odblokuje przycisk "Przesuń".
+- **Cofnij**: przywraca oryginalną wartość `Distance` sprzed ostatniego
+  kliknięcia "Przesuń", krok po kroku.
+- **Log sesji**: każda sesja programu zapisuje pełny log do pliku w
+  `logs\session_<data_godzina>.log` obok pliku .exe.
 
 ## Wymagania
 
@@ -23,48 +45,18 @@ na aktywnym rysunku na zewnątrz elementu, żeby tekst nie wpadał w kontur rysu
 
 ## Budowanie
 
-1. Otwórz `RadiusDimensionMover.csproj` w Visual Studio.
-2. W pliku `.csproj` popraw ścieżki `HintPath` do trzech referencji Tekla,
-   tak żeby wskazywały na Twój faktyczny folder instalacji, np.:
-   ```
-   C:\Program Files\Tekla Structures\2025.0\nt\bin\plugins\
-   ```
-3. Zbuduj projekt (Build → Build Solution). Powinien powstać
-   `RadiusDimensionMover.exe`.
-
-**Jeśli kompilacja zgłosi błąd przy `CenterPoint`, `Point` albo `Modify()`**
-w pliku `RadiusDimensionService.cs` – zajrzyj do lokalnej dokumentacji API
-(Tekla → Help → Tekla Open API Reference, albo plik `.chm` w folderze
-instalacji Tekli), znajdź klasę `RadiusDimension` i popraw nazwę właściwości.
-Nie miałem tu środowiska Tekli, żeby to skompilować i przetestować 1:1 na
-Twojej wersji – reszta logiki (pętla, wektor kierunku, offset) zostaje bez zmian.
+1. Otwórz `RadiusDimensionMover.csproj` w Visual Studio (albo `dotnet build
+   RadiusDimensionMover.csproj -c Debug -p:Platform=x64`).
+2. NuGet automatycznie pobierze pakiety `Tekla.Structures*` w wersji 2025.0.0.
+   Jeśli masz inną wersję Tekli, popraw wersję pakietów w `.csproj`.
+3. Zbuduj projekt. Powstanie `bin\x64\Debug\net48\RadiusDimensionMover.exe`.
 
 ## Uruchamianie
 
 1. Uruchom Teklę, otwórz model, otwórz w edytorze rysunek pojedynczej części.
-2. Uruchom `RadiusDimensionMover.exe` (może działać obok Tekli, niezależnie).
-3. Ustaw odległość przesunięcia w mm.
-4. Kliknij **"Przesuń wszystkie wymiary R"**.
+2. Uruchom `RadiusDimensionMover.exe` (działa obok Tekli, niezależnie).
+3. Ustaw krok w mm (domyślnie 40mm).
+4. Kliknij **"Przesuń wszystkie wymiary R (+krok)"**.
 5. Log w oknie pokaże ile wymiarów znaleziono i ile udało się przesunąć.
-6. Wróć do Tekli – rysunek powinien odświeżyć się automatycznie
-   (jeśli nie, zamknij i otwórz ponownie widok rysunku).
-
-## Rozszerzenie: prawdziwa detekcja kolizji z innymi tekstami (v2, do dopracowania)
-
-Obecna wersja robi "ślepe" przesunięcie o stałą wartość – rozwiązuje to
-najczęstszy przypadek (wymiar R wpisany w środek rysunku). Żeby faktycznie
-sprawdzać kolizje z konkretnymi innymi napisami, trzeba by:
-
-1. Pobrać wszystkie obiekty tekstowe/wymiarowe na widoku
-   (`Text`, `Dimension` i pochodne) i ich przybliżone bounding boxy.
-2. Dla każdego `RadiusDimension` po przesunięciu sprawdzać, czy jego bounding
-   box nachodzi na bounding box innego obiektu.
-3. Jeśli tak – zwiększać offset iteracyjnie (np. co 20 mm, max np. 10 prób)
-   aż kolizja zniknie albo skończą się próby.
-
-To wymaga sprawdzenia w API Reference, jak dokładnie pobrać bounding box
-danego typu obiektu w Tekla Open API (różni się to trochę między typami
-obiektów) – nie chciałem zgadywać tych nazw na sucho, żeby nie wrzucać kodu,
-który się nie skompiluje. Jeśli chcesz, mogę to dopisać w kolejnym kroku,
-najlepiej z Tobą sprawdzającym nazwy metod w Object Browser w Visual Studio
-(IntelliSense na żywym API pokaże dokładne sygnatury).
+6. Wróć do Tekli i oceń wzrokowo – jeśli krok nie wystarczył, kliknij
+   "Cofnij" i spróbuj ponownie z innym krokiem.
