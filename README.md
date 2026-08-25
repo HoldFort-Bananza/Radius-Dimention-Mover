@@ -40,33 +40,36 @@ trzeba – "Cofnij" i próbujesz ponownie z innym krokiem.
 ## Wymagania
 
 - Tekla Structures 2025 zainstalowana na tym samym komputerze (z ważną licencją).
-- Visual Studio (2019/2022) z obciążeniem ".NET desktop development".
-- .NET Framework 4.8 Developer Pack.
+- Internet podczas instalacji (instalator pobiera biblioteki Tekla Open API).
 
-## WAŻNE: samo `.exe` z GitHub Release NIE wystarczy
+## Instalacja
 
-Plik `RadiusDimensionMover.exe` dołączony do release'a **wymaga obok siebie**
-kilku bibliotek Tekla Open API (`Tekla.Structures.dll`,
-`Tekla.Structures.Drawing.dll` itd., w wersji dokładnie 2025.0.0.0) - bez nich
-przy uruchomieniu dostaniesz błąd ładowania assembly. Te biblioteki
-**celowo nie są dołączone do repo/release'u**, bo są własnością Trimble/Tekla
-i ich licencja (EULA) wprost zabrania redystrybucji stronom trzecim - a to
-repozytorium jest publiczne.
+1. Pobierz `RadiusDimensionMover-Setup-vX.Y.exe` z [Releases](../../releases).
+2. Uruchom go i zaakceptuj pokazaną licencję (EULA Trimble/Tekla).
+3. Instalator sam pobierze wymagane biblioteki Tekla Open API świeżo z
+   publicznego NuGet (nuget.org) - pod Twoją własną licencją Tekli, dokładnie
+   to samo co zrobiłby `dotnet restore`, tylko zautomatyzowane. Te biblioteki
+   **nie są dołączone do repo/instalatora** - są własnością Trimble/Tekla i
+   ich licencja zabrania redystrybucji stronom trzecim, a to repo jest
+   publiczne. Instalator tylko automatyzuje ich legalne pobranie na Twój
+   komputer.
+4. Gotowe - skrót w Menu Start (i opcjonalnie na pulpicie).
 
-**Najprostsze rozwiązanie: instalator.** W release'u jest też
-`RadiusDimensionMover-Setup-vX.Y.exe` - uruchamiasz go, akceptujesz EULA
-Trimble/Tekla (pokazaną jako ekran licencji), a instalator sam pobiera
-brakujące biblioteki świeżo z publicznego NuGet (nuget.org) na Twój komputer,
-pod Twoją własną licencją Tekli - dokładnie to samo, co zrobiłoby `dotnet
-restore`, tylko zautomatyzowane. Wymaga internetu podczas instalacji i
-zalicencjonowanej Tekli Structures 2025 na tym komputerze. Źródła instalatora
-są w folderze `installer/` (Inno Setup - `setup.iss` + `fetch-dependencies.ps1`).
+Źródła instalatora (w pełni jawne, nic ukrytego) są w folderze `installer/`:
+`setup.iss` (Inno Setup) i `fetch-dependencies.ps1` (skrypt pobierający
+biblioteki).
 
-**Alternatywa: zbuduj sam.** Jeśli wolisz nie ufać gotowemu instalatorowi,
-zbuduj program z kodu źródłowego (patrz "Budowanie" poniżej) - `dotnet build`
-/ Visual Studio automatycznie pobierze te same biblioteki.
+## Uruchamianie
 
-## Budowanie
+1. Uruchom Teklę, otwórz model, otwórz w edytorze rysunek pojedynczej części.
+2. Uruchom Radius Dimension Mover (skrót z Menu Start/pulpitu).
+3. Ustaw krok w mm (domyślnie 40mm).
+4. Kliknij **"Przesuń wszystkie wymiary R (+krok)"**.
+5. Log w oknie pokaże ile wymiarów znaleziono i ile udało się przesunąć.
+6. Wróć do Tekli i oceń wzrokowo – jeśli krok nie wystarczył, kliknij
+   "Cofnij" i spróbuj ponownie z innym krokiem.
+
+## Budowanie z kodu źródłowego (dla programistów)
 
 1. Otwórz `RadiusDimensionMover.csproj` w Visual Studio (albo `dotnet build
    RadiusDimensionMover.csproj -c Debug -p:Platform=x64`).
@@ -74,12 +77,5 @@ zbuduj program z kodu źródłowego (patrz "Budowanie" poniżej) - `dotnet build
    Jeśli masz inną wersję Tekli, popraw wersję pakietów w `.csproj`.
 3. Zbuduj projekt. Powstanie `bin\x64\Debug\net48\RadiusDimensionMover.exe`.
 
-## Uruchamianie
-
-1. Uruchom Teklę, otwórz model, otwórz w edytorze rysunek pojedynczej części.
-2. Uruchom `RadiusDimensionMover.exe` (działa obok Tekli, niezależnie).
-3. Ustaw krok w mm (domyślnie 40mm).
-4. Kliknij **"Przesuń wszystkie wymiary R (+krok)"**.
-5. Log w oknie pokaże ile wymiarów znaleziono i ile udało się przesunąć.
-6. Wróć do Tekli i oceń wzrokowo – jeśli krok nie wystarczył, kliknij
-   "Cofnij" i spróbuj ponownie z innym krokiem.
+Żeby zbudować sam instalator: zainstaluj [Inno Setup](https://jrsoftware.org/isinfo.php),
+zbuduj najpierw projekt jak wyżej, potem uruchom `ISCC.exe installer\setup.iss`.
