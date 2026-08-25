@@ -131,6 +131,35 @@ namespace RadiusDimensionMover
             Controls.Add(_undoButton);
             Controls.Add(_statusLabel);
             Controls.Add(_logBox);
+
+            // Naturalny moment, żeby sprawdzić, czy ktoś ręcznie poprawił
+            // wymiar w Tekli: użytkownik musi kliknąć z powrotem na to okno,
+            // żeby móc znów użyć "Przesuń" - to właśnie odpala Activated.
+            Activated += MainForm_Activated;
+        }
+
+        private void MainForm_Activated(object sender, EventArgs e)
+        {
+            if (_canRun)
+            {
+                // Już odblokowane - nie ma sensu odpytywać Tekli.
+                return;
+            }
+
+            try
+            {
+                if (_service.HasAnyDimensionChangedSinceLastMove())
+                {
+                    _canRun = true;
+                    _runButton.Enabled = true;
+                    _statusLabel.Text = "Wykryto ręczną zmianę wymiaru na rysunku – przycisk Przesuń odblokowany.";
+                }
+            }
+            catch
+            {
+                // Ciche pominięcie - nie chcemy wyskakujących błędów przy
+                // zwykłym przełączeniu się z powrotem na to okno.
+            }
         }
 
         private void ToggleDirectionButton_Click(object sender, EventArgs e)

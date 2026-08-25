@@ -21,6 +21,13 @@ namespace RadiusDimensionMover
         private readonly Stack<List<(RadiusDimension dim, double previousDistance)>> _undoStack
             = new Stack<List<(RadiusDimension, double)>>();
 
+        // Wartości Distance ustawione przez OSTATNIE udane "Przesuń" - używane
+        // do wykrycia, czy użytkownik ręcznie przesunął któryś wymiar R na
+        // rysunku (np. przeciągając go w Tekli) od tego momentu. Jeśli tak,
+        // UI może z powrotem odblokować przycisk "Przesuń".
+        private List<(RadiusDimension dim, double appliedDistance)> _lastAppliedMove
+            = new List<(RadiusDimension, double)>();
+
         // --- Parametry heurystyki auto-rozstawiania (do ręcznego dostrojenia,
         // jeśli w praktyce okaże się za ciasno/za luźno) ---
 
@@ -246,6 +253,7 @@ namespace RadiusDimensionMover
         public MoveResult MoveAllRadiusDimensionsOutward(double offsetMm, bool oppositeDirection, Action<string> log)
         {
             var thisMoveHistory = new List<(RadiusDimension, double)>();
+            var appliedNow = new List<(RadiusDimension, double)>();
 
             var result = new MoveResult();
 
@@ -300,6 +308,7 @@ namespace RadiusDimensionMover
                     if (rd.Modify())
                     {
                         result.MovedCount++;
+                        appliedNow.Add((rd, newDistance));
                     }
                     else
                     {
@@ -316,6 +325,7 @@ namespace RadiusDimensionMover
             log("Zapisano zmiany w rysunku (CommitChanges).");
 
             _undoStack.Push(thisMoveHistory);
+            _lastAppliedMove = appliedNow;
 
             return result;
         }
@@ -366,6 +376,11 @@ namespace RadiusDimensionMover
             var lastMove = _undoStack.Pop();
             result.TotalCount = lastMove.Count;
 
+            // Po cofnięciu nie ma już żadnego "ostatniego przesunięcia" do
+            // porównywania - wyczyść bazę, żeby detekcja ręcznej zmiany nie
+            // odpalała się na nieaktualnych danych.
+            _lastAppliedMove = new List<(RadiusDimension, double)>();
+
             var drawingHandler = new DrawingHandler();
             if (!drawingHandler.GetConnectionStatus())
             {
@@ -404,6 +419,43 @@ namespace RadiusDimensionMover
             log("Cofnięto jeden krok i zapisano rysunek (CommitChanges). Pozostało kroków do cofnięcia: " + _undoStack.Count);
 
             return result;
+        }
+
+        /// <summary>
+        /// Sprawdza, czy któryś z wymiarów R przesuniętych ostatnim udanym
+        /// "Przesuń" ma teraz Distance inne niż to, co wtedy ustawiliśmy -
+        /// czyli czy ktoś ręcznie poprawił pozycję na rysunku (np. przeciągając
+        /// wymiar w Tekli) od tamtego momentu. Odczyty bezpośrednio z
+        /// zapamiętanych obiektów RadiusDimension, bez ponownego wyszukiwania
+        /// po arkuszu - jeśli którykolwiek rzuci wyjątkiem (np. usunięty,
+        /// rysunek zamknięty), traktujemy to jako "coś się zmieniło" i wolimy
+        /// bezpiecznie odblokować przycisk niż zablokować użytkownika.
+        /// </summary>
+        public bool HasAnyDimensionChangedSinceLastMove()
+        {
+            if (_lastAppliedMove.Count == 0)
+            {
+                return false;
+            }
+
+            const double toleranceMm = 0.01;
+
+            foreach (var entry in _lastAppliedMove)
+            {
+                try
+                {
+                    if (Math.Abs(entry.dim.Distance - entry.appliedDistance) > toleranceMm)
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 }
