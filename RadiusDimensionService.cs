@@ -184,8 +184,13 @@ namespace RadiusDimensionMover
                         log("  Nie znaleziono w pełni wolnego miejsca w limicie " + MaxDistanceMm + "mm - ustawiono maksymalny sprawdzony dystans.");
                     }
 
-                    double newDistance = oppositeDirection ? -chosenDistance : chosenDistance;
-                    log($"  Wymiar R: {previousDistance:F1} -> {newDistance:F1} (dystans {chosenDistance:F1}mm{(foundClear ? ", wolne miejsce" : ", brak wolnego miejsca w limicie")}). [DIAG] szacowana pozycja tekstu=({finalX:F1},{finalY:F1})");
+                    // chosenDistance jest w mm NA PAPIERZE (tak liczymy kolizje
+                    // względem ArcPoint/Text, które też są w mm papieru).
+                    // Distance zapisywane do API jest w jednostkach modelu -
+                    // trzeba podzielić przez skalę widoku.
+                    double scale = GetViewScale(rd, log);
+                    double newDistance = (oppositeDirection ? -chosenDistance : chosenDistance) / scale;
+                    log($"  Wymiar R: {previousDistance:F1} -> {newDistance:F1} (dystans {chosenDistance:F1}mm na papierze, skala widoku {scale:F3}{(foundClear ? ", wolne miejsce" : ", brak wolnego miejsca w limicie")}). [DIAG] szacowana pozycja tekstu=({finalX:F1},{finalY:F1})");
 
                     thisMoveHistory.Add((rd, previousDistance));
                     rd.Distance = newDistance;
@@ -275,14 +280,15 @@ namespace RadiusDimensionMover
                 try
                 {
                     double currentDistance = rd.Distance;
-                    double magnitude = Math.Abs(currentDistance) + offsetMm;
+                    double scale = GetViewScale(rd, log);
+
+                    // offsetMm to mm NA PAPIERZE (tak to rozumie użytkownik).
+                    // Distance jest w jednostkach modelu, więc krok trzeba
+                    // podzielić przez skalę widoku przed dodaniem.
+                    double magnitude = Math.Abs(currentDistance) + offsetMm / scale;
                     double newDistance = oppositeDirection ? -magnitude : magnitude;
 
-                    // [DIAG] Tymczasowe logowanie do zdiagnozowania zgłoszenia
-                    // "nawet 1mm przesuwa bardzo dużo" - pokazuje dokładne
-                    // wartości Distance z API Tekli przed/po, żeby sprawdzić
-                    // czy to kwestia jednostek/skali rysunku, czy błąd w kodzie.
-                    log($"  [DIAG] Distance przed = {currentDistance:F3} (jednostka wg API Tekli), krok wpisany = {offsetMm:F3} mm, Distance po = {newDistance:F3}");
+                    log($"  [DIAG] Distance przed = {currentDistance:F3} (jedn. modelu), skala widoku = {scale:F3}, krok wpisany = {offsetMm:F3} mm (papier) = {offsetMm / scale:F3} (jedn. modelu), Distance po = {newDistance:F3}, ~papier po = {Math.Abs(newDistance) * scale:F1}mm");
 
                     thisMoveHistory.Add((rd, currentDistance));
                     rd.Distance = newDistance;
@@ -365,6 +371,48 @@ namespace RadiusDimensionMover
             return (dirX, dirY, referencePoint);
         }
 
+        /// <summary>
+        /// Zwraca skalę widoku, w którym leży dany wymiar R (np. 4.0 dla
+        /// rysunku szczegółowego "4:1"). RadiusDimension.Distance jest
+        /// wyrażone w jednostkach MODELU, a ArcPoint1/2/3 (i to co widać na
+        /// papierze) - w jednostkach PAPIERU już przeskalowanych przez widok.
+        /// Bez tego przeliczenia krok w mm wpisany przez użytkownika (myślany
+        /// jako mm NA PAPIERZE) wychodził kilkukrotnie za duży/za mały,
+        /// zależnie od skali widoku - potwierdzone na żywym rysunku
+        /// "Einzelteil Blech" (widok w powiększonej skali), gdzie krok 100mm
+        /// wylądował jako ~400mm na papierze.
+        ///
+        /// Bezpieczny fallback = 1.0 (stare, "1mm = 1mm" zachowanie), jeśli z
+        /// jakiegoś powodu nie da się odczytać widoku/skali.
+        /// </summary>
+        private static double GetViewScale(RadiusDimension rd, Action<string> log)
+        {
+            try
+            {
+                var viewBase = rd.GetView();
+                if (viewBase is View view)
+                {
+                    double scale = view.Attributes.Scale;
+                    if (scale > 1e-6)
+                    {
+                        return scale;
+                    }
+
+                    log?.Invoke($"  [DIAG] Skala widoku odczytana jako {scale:F3} (nieprawidłowa) - użyto 1.0.");
+                }
+                else
+                {
+                    log?.Invoke("  [DIAG] GetView() nie zwrócił obiektu typu View - użyto skali 1.0.");
+                }
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke("  [DIAG] Nie udało się odczytać skali widoku - użyto 1.0. Błąd: " + ex.Message);
+            }
+
+            return 1.0;
+        }
+
         private static double DistanceBetween(double x1, double y1, double x2, double y2)
         {
             double dx = x1 - x2;
@@ -438,8 +486,13 @@ namespace RadiusDimensionMover
                 try
                 {
                     double currentDistance = rd.Distance;
-                    double magnitude = Math.Abs(currentDistance) + offsetMm;
-                    double signedD = oppositeDirection ? -magnitude : magnitude;
+                    double scale = GetViewScale(rd, null);
+
+                    // Ten sam przelicznik co w MoveAllRadiusDimensionsOutward:
+                    // currentDistance jest w jedn. modelu, przeliczamy na mm
+                    // papieru (skala), dodajemy krok (już w mm papieru).
+                    double magnitudePaper = Math.Abs(currentDistance) * scale + offsetMm;
+                    double signedD = oppositeDirection ? -magnitudePaper : magnitudePaper;
 
                     var (dirX, dirY, referencePoint) = GetOutwardDirection(rd);
                     double candidateX = referencePoint.X + dirX * signedD;
