@@ -1,15 +1,20 @@
 ## .NET / Visual Studio
-bin/
 obj/
 .vs/
 *.user
 *.suo
 
-## Build results
-[Dd]ebug/
-[Rr]elease/
-x64/
-x86/
+## bin/ is ignored except the built app for distribution
+bin/*
+!bin/x64/
+bin/x64/*
+!bin/x64/Debug/
+bin/x64/Debug/*
+!bin/x64/Debug/net48/
+bin/x64/Debug/net48/*
+!bin/x64/Debug/net48/RadiusDimensionMover.exe
+!bin/x64/Debug/net48/RadiusDimensionMover.exe.config
+!bin/x64/Debug/net48/RadiusDimensionMover.pdb
 
 ## Rider / VSCode
 .idea/
