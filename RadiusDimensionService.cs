@@ -49,9 +49,15 @@ namespace RadiusDimensionMover
         /// przy Distance=3 i Distance=88,7) - to punkty definiujące geometrię
         /// samego łuku, niezwiązane z pozycją tekstu/leadera. Próby zgadywania
         /// kierunku geometrycznie (środek okręgu łuku, potem środek widoku)
-        /// dawały błędne wyniki na żywych rysunkach. Dlatego to Ty oceniasz
-        /// wzrokowo w Tekli, czy krok wystarczył, i w razie potrzeby klikasz
-        /// "Cofnij" + próbujesz ponownie z innym krokiem.
+        /// dawały błędne wyniki na żywych rysunkach. Sprawdzone też (i odrzucone,
+        /// żeby nie próbować od nowa): RadiusDimension nie implementuje
+        /// IAxisAlignedBoundingBox (sprawdzone refleksją po całym
+        /// Tekla.Structures.Drawing.dll); rd.GetRelatedObjects() zwraca 0
+        /// obiektów na żywym rysunku; rd.GetDimensionSet() rzuca wyjątek
+        /// ("nieprawidłowa operacja") dla pojedynczego wymiaru R spoza
+        /// łańcucha wymiarowego. Dlatego to Ty oceniasz wzrokowo w Tekli, czy
+        /// krok wystarczył, i w razie potrzeby klikasz "Cofnij" + próbujesz
+        /// ponownie z innym krokiem.
         /// </summary>
         public MoveResult MoveAllRadiusDimensionsOutward(double offsetMm, bool oppositeDirection, Action<string> log)
         {
