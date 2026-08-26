@@ -73,14 +73,22 @@ namespace RadiusDimensionMover
 
         // Zakres i krok wyszukiwania finalnej, wolnej od kolizji odległości
         // wzdłuż JUŻ WYBRANEJ (wizualnie potwierdzonej) strony.
-        private const double FinalMinDistanceMm = 20.0;
-        private const double FinalMaxDistanceMm = 300.0;
+        private const double FinalMinDistanceMm = 60.0;
+        private const double FinalMaxDistanceMm = 150.0;
         private const double FinalStepMm = 15.0;
 
+        // Stały, uniwersalny odstęp ZA najdalej wykrytą linią/opisem
+        // wymiarowym (zamiast "pierwszy wolny krok skanu", co zależało od
+        // FinalStepMm) - żeby wynik był przewidywalny niezależnie od
+        // konkretnego układu rysunku.
+        private const double ClearanceBeyondLastLineMm = 25.0;
+
         // Rozmiar (px) kwadratu sprawdzanego pod kątem zajętości wokół
-        // kandydującej pozycji tekstu oraz próg "zbyt zajęte, szukaj dalej".
+        // kandydującej pozycji tekstu oraz próg "to już realna treść (linia/
+        // opis wymiarowy), nie szum tła" przy wyszukiwaniu najdalszej
+        // zajętej pozycji.
         private const int OccupancyBoxSizePx = 36;
-        private const double OccupancyThreshold = 0.30;
+        private const double ContentPresentOccupancyThreshold = 0.05;
 
         // Minimalna liczba różniących się pikseli, żeby uznać zrzut "przed"
         // i "po" za realną, wiarygodną zmianę (a nie szum/nic się nie stało).
@@ -375,33 +383,74 @@ namespace RadiusDimensionMover
 
                 log("  [WIZJA] Kierunek na zewnątrz policzony ze środka łuku (ArcPoint1/2/3) - potwierdzona strona: " + (sign > 0 ? "+" : "-") + ".");
 
+                // Skanujemy CAŁY zakres (zamiast zatrzymać się na pierwszym
+                // wolnym miejscu) i lądujemy TUŻ ZA najdalszą wykrytą
+                // "zajętością" (czyli na wysokości najdalszej istniejącej
+                // linii/opisu wymiarowego w tym kierunku) - użytkownik chce
+                // wymiar R wyrównany z resztą stosu wymiarów, a nie w
+                // pierwszej wolnej szczelinie, która często jest tuż przy
+                // części, przed jakąkolwiek inną linią wymiarową.
+                var occupancies = new List<double>();
+                double sheetLimitDistance = double.MaxValue;
                 for (double d = FinalMinDistanceMm; d <= FinalMaxDistanceMm; d += FinalStepMm)
                 {
                     SetFixedDistance(rd, activeDrawing, scale, sign * d);
                     Thread.Sleep(200);
-                    var shot = WindowCapture.CaptureWindow(teklaHwnd);
-                    var diff = WindowCapture.DiffCentroid(beforeShot, shot);
-
-                    double occupancy = diff.count >= MinDiffPixelsForValidProbe
-                        ? WindowCapture.GetOccupancyFraction(beforeShot, diff.cx, diff.cy, OccupancyBoxSizePx)
-                        : 1.0;
-
-                    bool isLastStep = d + FinalStepMm > FinalMaxDistanceMm;
-                    bool accepted = occupancy <= OccupancyThreshold || isLastStep;
-
-                    log("  [WIZJA] Próba " + d.ToString("0") + "mm (strona geometrycznie na zewnątrz): zajętość=" + occupancy.ToString("0.00") + " -> " + (accepted ? "OK" : "dalej"));
-
-                    if (accepted)
+                    using (var shot = WindowCapture.CaptureWindow(teklaHwnd))
                     {
-                        beforeShot.Dispose();
-                        reference = shot;
-                        return true;
-                    }
+                        var diff = WindowCapture.DiffCentroid(beforeShot, shot);
+                        bool validDiff = diff.count >= MinDiffPixelsForValidProbe;
+                        double occupancy = validDiff
+                            ? WindowCapture.GetOccupancyFraction(beforeShot, diff.cx, diff.cy, OccupancyBoxSizePx)
+                            : 0.0;
+                        occupancies.Add(occupancy);
 
-                    shot.Dispose();
+                        // Krawędź arkusza to TWARDY limit - nigdy jej nie
+                        // przeskakujemy (w odróżnieniu od zwykłej treści).
+                        if (validDiff && sheetLimitDistance == double.MaxValue
+                            && WindowCapture.HasFrameOrGuideColor(beforeShot, diff.cx, diff.cy, OccupancyBoxSizePx))
+                        {
+                            sheetLimitDistance = d;
+                            log("  [WIZJA] Skan " + d.ToString("0") + "mm: osiągnięto krawędź arkusza - dalej nie szukam.");
+                            break;
+                        }
+
+                        log("  [WIZJA] Skan " + d.ToString("0") + "mm: zajętość=" + occupancy.ToString("0.00"));
+                    }
                 }
 
-                return false;
+                int lastOccupiedIndex = occupancies.FindLastIndex(o => o > ContentPresentOccupancyThreshold);
+                double finalDistance;
+                if (lastOccupiedIndex >= 0)
+                {
+                    double lastOccupiedDistance = FinalMinDistanceMm + lastOccupiedIndex * FinalStepMm;
+                    finalDistance = lastOccupiedDistance + ClearanceBeyondLastLineMm;
+                }
+                else
+                {
+                    finalDistance = FinalMinDistanceMm;
+                }
+
+                // Nie wychodź poza krawędź arkusza - cofnij się o jeden krok
+                // przed nią, jeśli wyliczona odległość by ją przekroczyła.
+                if (sheetLimitDistance != double.MaxValue)
+                {
+                    double maxAllowed = Math.Max(FinalMinDistanceMm, sheetLimitDistance - FinalStepMm);
+                    if (finalDistance > maxAllowed)
+                    {
+                        log("  [WIZJA] Wyliczone " + finalDistance.ToString("0") + "mm wychodziłoby poza arkusz - ograniczam do " + maxAllowed.ToString("0") + "mm.");
+                        finalDistance = maxAllowed;
+                    }
+                }
+
+                log("  [WIZJA] Wybrana odległość: " + finalDistance.ToString("0") + "mm (" + ClearanceBeyondLastLineMm.ToString("0") + "mm za najdalszą wykrytą linią/opisem w tym kierunku).");
+
+                SetFixedDistance(rd, activeDrawing, scale, sign * finalDistance);
+                Thread.Sleep(200);
+
+                beforeShot.Dispose();
+                reference = WindowCapture.CaptureWindow(teklaHwnd);
+                return true;
             }
             catch (Exception ex)
             {

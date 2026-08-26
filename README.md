@@ -19,16 +19,21 @@ rysunku ani w inne teksty/wymiary.
 5. Dla każdego wymiaru R liczy kierunek "na zewnątrz części" **z geometrii
    łuku** (`ArcPoint1/2/3` → środek okręgu; dla wypukłego zaokrąglenia
    narożnika środek leży po stronie materiału, więc kierunek "od środka na
-   zewnątrz" = kierunek "od materiału"), sprawdza jednym zrzutem ekranu, czy
-   znak `+`/`-` w Tekli zgadza się z tym kierunkiem, po czym w trybie
-   `Fixed` szuka wolnej (nienachodzącej na inne elementy) odległości wzdłuż
-   TEJ potwierdzonej strony (15-300mm na papierze, krok 15mm). Jeśli z
-   jakiegokolwiek powodu (np. zdegenerowana geometria, okno Tekli nie
-   znalezione) nie da się tego ustalić, wymiar spada do wbudowanego w Teklę
-   trybu **`Placing=Free`** jako bezpiecznego wariantu awaryjnego (dobrze
-   unika kolizji z innymi elementami, ale sam z siebie potrafi wylądować
-   wewnątrz konturu części - stąd potrzeba głównej metody powyżej).
-6. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
+   zewnątrz" = kierunek "od materiału") i sprawdza jednym zrzutem ekranu,
+   czy znak `+`/`-` w Tekli zgadza się z tym kierunkiem.
+6. Następnie skanuje wzdłuż TEJ potwierdzonej strony cały zakres 60-150mm na
+   papierze (krok 15mm), sprawdzając na zrzucie ekranu, gdzie leżą już
+   istniejące linie/opisy wymiarowe, i **ustawia tekst 25mm za najdalszą z
+   nich** - tak, żeby wymiar R współgrał z łańcuchami wymiarowymi blachy i
+   rysunek został kompaktowy, zamiast wpadać w pierwszą wolną szczelinę tuż
+   przy części. Krawędź arkusza (pomarańczowa ramka) jest twardym limitem -
+   program nigdy nie wyjdzie poza nią. Jeśli z jakiegokolwiek powodu (np.
+   zdegenerowana geometria, okno Tekli nie znalezione) nie da się tego
+   ustalić, wymiar spada do wbudowanego w Teklę trybu **`Placing=Free`** jako
+   bezpiecznego wariantu awaryjnego (dobrze unika kolizji z innymi
+   elementami, ale sam z siebie potrafi wylądować wewnątrz konturu części -
+   stąd potrzeba głównej metody powyżej).
+7. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
 
 Wcześniejsze podejścia okazały się zawodne albo kruche: `RadiusDimension` nie
 ma żadnego sposobu odczytania własnej POZYCJI na rysunku, a wbudowany w Teklę

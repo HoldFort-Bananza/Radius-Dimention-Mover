@@ -109,9 +109,27 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
+        /// Rozpoznaje kolor RAMKI/PROWADNICY Tekli (pomarańczowa krawędź
+        /// arkusza ~RGB(254,101,0), zielona linia widoku/siatki
+        /// ~RGB(0,159,0)) - odróżnia je od realnej treści rysunku (biały
+        /// kontur, czerwony tekst wymiaru, niebieskie/turkusowe linie
+        /// opisów), żeby nie były traktowane jak "coś do ominięcia/
+        /// przeskoczenia" przy szukaniu wolnego miejsca. Potwierdzone
+        /// empirycznie próbkowaniem pikseli z żywego zrzutu ekranu.
+        /// </summary>
+        private static bool IsFrameOrGuideColor(int r, int g, int b)
+        {
+            bool isOrangeSheetBorder = r > 200 && g > 60 && g < 150 && b < 50;
+            bool isGreenGuideLine = g > 100 && r < 50 && b < 50;
+            return isOrangeSheetBorder || isGreenGuideLine;
+        }
+
+        /// <summary>
         /// Sprawdza, jaki procent pikseli w kwadracie o boku size wokół (cx,cy)
         /// jest "czymś narysowanym" (odróżnia się od czarnego tła Tekli) -
         /// używane jako prosty wykrywacz "czy tu jest już coś innego".
+        /// Piksele ramki/prowadnicy (patrz IsFrameOrGuideColor) NIE liczą
+        /// się jako zajętość - to nie treść rysunku do ominięcia.
         /// </summary>
         public static double GetOccupancyFraction(Bitmap bmp, double cx, double cy, int size, int backgroundThreshold = 30)
         {
@@ -146,7 +164,8 @@ namespace RadiusDimensionMover
                     int g = bytes[i + 1];
                     int r = bytes[i + 2];
                     total++;
-                    if (b > backgroundThreshold || g > backgroundThreshold || r > backgroundThreshold)
+                    if ((b > backgroundThreshold || g > backgroundThreshold || r > backgroundThreshold)
+                        && !IsFrameOrGuideColor(r, g, b))
                     {
                         occupied++;
                     }
@@ -154,6 +173,53 @@ namespace RadiusDimensionMover
             }
 
             return total > 0 ? (double)occupied / total : 1.0;
+        }
+
+        /// <summary>
+        /// Sprawdza, czy w kwadracie o boku size wokół (cx,cy) występuje
+        /// kolor ramki/prowadnicy Tekli (patrz IsFrameOrGuideColor) - np.
+        /// pomarańczowa krawędź arkusza. Używane jako TWARDY limit "dalej
+        /// już nie" przy szukaniu miejsca dla wymiaru - w przeciwieństwie do
+        /// zwykłej zajętości, tego nigdy nie próbujemy "przeskoczyć".
+        /// </summary>
+        public static bool HasFrameOrGuideColor(Bitmap bmp, double cx, double cy, int size)
+        {
+            int half = size / 2;
+            int startX = Math.Max(0, (int)cx - half);
+            int startY = Math.Max(0, (int)cy - half);
+            int endX = Math.Min(bmp.Width - 1, (int)cx + half);
+            int endY = Math.Min(bmp.Height - 1, (int)cy + half);
+
+            if (startX >= endX || startY >= endY)
+            {
+                return false;
+            }
+
+            var rect = new Rectangle(startX, startY, endX - startX, endY - startY);
+            BitmapData data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            int stride = data.Stride;
+            int h = rect.Height;
+            byte[] bytes = new byte[stride * h];
+            Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
+            bmp.UnlockBits(data);
+
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < rect.Width; x++)
+                {
+                    int i = row + x * 4;
+                    int b = bytes[i];
+                    int g = bytes[i + 1];
+                    int r = bytes[i + 2];
+                    if (IsFrameOrGuideColor(r, g, b))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
     }
 }
