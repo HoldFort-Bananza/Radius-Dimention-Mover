@@ -16,23 +16,34 @@ rysunku ani w inne teksty/wymiary.
    `Attributes.PlacingAttributes` na tryb auto (`IsFixed=false`) z ciasnym
    zakresem szukania 10-60mm na papierze, zamiast domyślnego "bez limitu",
    który potrafił wyrzucić opis bardzo daleko.
-5. Dla każdego wymiaru R ustawia `Attributes.Placing` na tryb **`Free`**
-   (wbudowany w Teklę silnik auto-rozstawiania wymiarów - ten sam mechanizm,
-   co przy łańcuchach wymiarów prostych) z zakresem szukania 15-300mm i
-   marginesem 30mm **na papierze** (przeliczane przez skalę widoku,
-   `View.Attributes.Scale`), pozwalając obu kierunkom. Tekla sama znajduje
-   wolne miejsce i unika kolizji z innymi tekstami/wymiarami/opisami -
-   program nie zgaduje pozycji, tylko prosi Teklę, żeby to zrobiła sama.
+5. Dla każdego wymiaru R liczy kierunek "na zewnątrz części" **z geometrii
+   łuku** (`ArcPoint1/2/3` → środek okręgu; dla wypukłego zaokrąglenia
+   narożnika środek leży po stronie materiału, więc kierunek "od środka na
+   zewnątrz" = kierunek "od materiału"), sprawdza jednym zrzutem ekranu, czy
+   znak `+`/`-` w Tekli zgadza się z tym kierunkiem, po czym w trybie
+   `Fixed` szuka wolnej (nienachodzącej na inne elementy) odległości wzdłuż
+   TEJ potwierdzonej strony (15-300mm na papierze, krok 15mm). Jeśli z
+   jakiegokolwiek powodu (np. zdegenerowana geometria, okno Tekli nie
+   znalezione) nie da się tego ustalić, wymiar spada do wbudowanego w Teklę
+   trybu **`Placing=Free`** jako bezpiecznego wariantu awaryjnego (dobrze
+   unika kolizji z innymi elementami, ale sam z siebie potrafi wylądować
+   wewnątrz konturu części - stąd potrzeba głównej metody powyżej).
 6. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
 
-Wcześniejsze podejścia (ręczny stały krok, zgadywanie kierunku geometrycznie,
-a nawet analiza pikseli na zrzutach ekranu) okazały się zawodne albo kruche -
-`RadiusDimension` nie ma żadnego sposobu odczytania własnej pozycji na
-rysunku. Rozwiązaniem okazało się użycie wbudowanego w samą Teklę mechanizmu
-`Placing.Free`, znalezionego przez analogię do `StraightDimensionSet`
-(`DimensionSetBaseAttributes.Placings`) - odziedziczonego przez
-`RadiusDimensionAttributes`, ale nie widocznego bez sprawdzenia pełnej
-hierarchii klas.
+Wcześniejsze podejścia okazały się zawodne albo kruche: `RadiusDimension` nie
+ma żadnego sposobu odczytania własnej POZYCJI na rysunku, a wbudowany w Teklę
+tryb `Placing=Free` (wybiera wolne miejsce, unikając kolizji z innymi
+tekstami/wymiarami) ma martwy punkt - kąt/stronę, po której ląduje, wybiera
+sam, "na sztywno" per wymiar, i żaden atrybut (`Direction`
+Positive/Negative) tego nie zmienia (sprawdzone empirycznie - 3 niezależne
+testy dały identyczny wynik), więc czasem ląduje w środku konturu części.
+Próba wykrycia konturu części piksel po pikselu (analiza "białych" pikseli na
+zrzucie ekranu) też zawiodła - linie i strzałki wymiarowe są rysowane tym
+samym kolorem co krawędzie części, więc nie da się ich odróżnić samą
+analizą koloru. Zadziałało dopiero policzenie kierunku wprost z geometrii
+łuku (`ArcPoint1/2/3`, dostępne przez API w tych samych jednostkach co
+`Distance`) połączone z jednym zrzutem ekranu tylko po to, żeby ustalić
+konwencję znaku Tekli - patrz `RadiusDimensionService.TryPlaceOutside`.
 
 ## Bezpieczniki
 
