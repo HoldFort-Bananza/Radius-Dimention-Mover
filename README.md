@@ -19,15 +19,26 @@ rysunku ani w inne teksty/wymiary.
 5. Dla każdego wymiaru R liczy geometrię łuku z `ArcPoint1/2/3` (środek
    okręgu i promień) - wszystko w jednostkach modelu, tej samej przestrzeni
    co `Distance`.
-6. **Decyduje, czy tekst zostaje WEWNĄTRZ części, czy idzie NA ZEWNĄTRZ:**
-   - część **większa niż 300mm i bez żadnego otworu** → tekst zostaje w
-     środku (jest tam pusto, rysunek jest najbardziej zwarty),
-   - część **z otworem albo mniejsza niż 300mm** → tekst idzie na zewnątrz,
-     w pobliże linii wymiarowych opisujących element.
+6. **Decyduje, czy tekst zostaje WEWNĄTRZ części, czy idzie NA ZEWNĄTRZ.**
+   W środku zostaje tylko wtedy, gdy spełnione są OBA warunki:
+   - część nie ma **żadnego** otworu (`GetBolts()` + `GetBooleans()` = 0),
+   - **krótszy** wymiar płaszczyzny blachy (bez grubości) jest co najmniej
+     120mm i co najmniej 3× promień łuku.
 
-   Rozmiar bierze z bryły części (`Part.GetSolid()`), a otwory z
-   `GetBolts()` + `GetBooleans()` - droga: rysunkowy `Part.ModelIdentifier`
-   → `Model.SelectModelObject`.
+   W przeciwnym razie tekst idzie na zewnątrz, w pobliże linii wymiarowych
+   opisujących element.
+
+   Wymiary bierze z bryły części (`Part.GetSolid()`) - z trzech wymiarów
+   odrzuca najmniejszy, bo to grubość blachy i nic nie mówi o tym, ile jest
+   miejsca na rysunku. Droga do modelu: rysunkowy `Part.ModelIdentifier` →
+   `Model.SelectModelObject`.
+
+   Dlaczego próg jest na **krótszym wymiarze płaszczyzny**, a nie na
+   największym wymiarze bryły: blacha 65,5 × 180,8 bez otworów, w której
+   tekst spokojnie się mieścił, była wyrzucana na zewnątrz, bo 180,8 nie
+   przechodziło progu 300mm. Dlaczego dodatkowo próg **bezwzględny** 120mm:
+   patrz "Znane ograniczenia" - bez niego wymiary na blachy 66 × 181
+   przelatywały na skos przez materiał i lądowały POD nią.
 7. Ustawia `Distance` jako ułamek rzeczywistego rozmiaru części (ze znakiem
    zależnym od tego, czy tekst ma iść na zewnątrz, czy do wnętrza). Jeśli
    geometrii nie da się policzyć (np. zdegenerowany łuk) albo nie ma danych z
@@ -66,6 +77,13 @@ uruchomienie liczyło coraz większe odległości - na blachy 175mm doszło do
   bounding boxa, `GetRelatedObjects()` zwraca pustkę. Dlatego program nie
   może sprawdzić, gdzie tekst faktycznie wylądował - ustawia `Distance` i
   ufa Tekli.
+- **Z tego wynika najważniejsze ograniczenie: `Distance` nie przekłada się
+  wprost na odległość tekstu.** Na blachy 66 × 181 przy `Distance=23` tekst
+  odjechał od łuku ~100mm. Dlatego umieszczanie WEWNĄTRZ jest dopuszczone
+  tylko dla blach szerokich (patrz próg 120mm) - na węższych oba wymiary R
+  przelatywały na skos przez materiał i lądowały pod blachą, jeden na drugim
+  i na wymiarze długości. Nie da się tego rozwiązać dokładniejszym
+  liczeniem, dopóki API nie podaje pozycji tekstu.
 - Z tego samego powodu **znak `Distance` (która strona to "na zewnątrz")
   jest stałą w kodzie** (`OutwardSign`), ustaloną na rzeczywistych rysunkach -
   nie da się go wyliczyć z API. Gdyby kiedyś wyszło odwrotnie, wystarczy

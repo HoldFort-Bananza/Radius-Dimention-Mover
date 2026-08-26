@@ -37,15 +37,31 @@ namespace RadiusDimensionMover
         private const double OutwardSign = -1.0;
 
         // --- Kiedy tekst wymiaru może zostać WEWNĄTRZ części ---
-        // Zasada ustalona z użytkownikiem: w środku wolno zostawić tekst tylko
-        // gdy część jest większa niż ten próg I NIE MA w sobie żadnego otworu
-        // (wtedy w środku jest pusto). Mniejsza część albo obecność otworu =
-        // tekst na zewnątrz, przy liniach wymiarowych.
-        private const double MinPartSizeForInsideMm = 300.0;
+        // Warunki: część NIE MA żadnego otworu I wokół łuku jest w płaszczyźnie
+        // blachy realne miejsce. "Jest miejsce" mierzymy KRÓTSZYM wymiarem
+        // płaszczyzny (bez grubości) w stosunku do promienia łuku.
+        //
+        // Pierwotnie był tu stały próg 300mm na NAJWIĘKSZYM wymiarze bryły i
+        // to było złe kryterium: blacha 65,5 x 180,8 bez otworów, w której
+        // tekst spokojnie się mieścił, była wyrzucana na zewnątrz, bo 180,8
+        // nie przechodziło progu. Grubość i długość nie mówią nic o tym, czy
+        // tekst ma się gdzie zmieścić - mówi o tym krótszy wymiar płaszczyzny.
+        private const double InsideRoomRadiusFactor = 3.0;
+
+        // Dodatkowy, BEZWZGLĘDNY próg na krótszy wymiar płaszczyzny.
+        //
+        // Konieczny, bo API nie podaje pozycji tekstu wymiaru: przy
+        // Distance=23 tekst odjechał ~100mm od łuku. Na blachy 66 x 181 bez
+        // otworów oba wymiary R przeleciały więc na skos przez materiał i
+        // wylądowały POD blachą, na sobie i na wymiarze długości. Do środka
+        // wchodzimy tylko wtedy, gdy blacha jest szeroka na tyle, że takie
+        // przestrzelenie nie wyprowadza tekstu poza obrys.
+        private const double InsideMinShortFaceMm = 120.0;
 
         // Jak głęboko w część wchodzi tekst, gdy wolno mu tam zostać -
-        // ułamek największego wymiaru części.
-        private const double InsideFraction = 0.10;
+        // ułamek KRÓTSZEGO wymiaru płaszczyzny, żeby tekst nie wyszedł
+        // obrysem po przeciwnej stronie.
+        private const double InsideFraction = 0.35;
 
         // Jak daleko na zewnątrz od łuku ląduje tekst - ułamek największego
         // wymiaru części. Wartość dobrana z rzeczywistych rysunków: na blachy
@@ -276,15 +292,26 @@ namespace RadiusDimensionMover
             double dirY = (rd.ArcPoint2.Y - center.Y) / radius;
 
             var facts = GetPartFacts(rd, log);
-            if (!facts.valid)
+            if (!facts.Valid)
             {
                 log("  Nie udało się odczytać danych części z modelu.");
                 return null;
             }
 
-            bool insideAllowed = facts.maxSizeMm > MinPartSizeForInsideMm && facts.holeCount == 0;
+            // Tekst może zostać WEWNĄTRZ tylko gdy część nie ma żadnych
+            // otworów I w płaszczyźnie blachy jest wokół łuku realne miejsce.
+            //
+            // Miarą "jest miejsce" jest KRÓTSZY wymiar płaszczyzny w stosunku
+            // do promienia, a nie stały próg na największym wymiarze. Ten
+            // pierwotny wariant (>300mm na max wymiarze) wyrzucał na zewnątrz
+            // blachę 65,5 x 180,8 bez otworów, w której tekst spokojnie się
+            // mieścił - 180,8 nie przechodziło progu, choć miejsca było dość.
+            bool roomInside = facts.FaceShortMm >= radius * InsideRoomRadiusFactor
+                && facts.FaceShortMm >= InsideMinShortFaceMm;
+            bool insideAllowed = facts.HoleCount == 0 && roomInside;
 
-            log("  Część: max wymiar " + facts.maxSizeMm.ToString("0") + "mm, otworów: " + facts.holeCount
+            log("  Część: płaszczyzna " + facts.FaceShortMm.ToString("0") + " x " + facts.FaceLongMm.ToString("0")
+                + "mm, śruby: " + facts.BoltCount + ", wycięcia: " + facts.BooleanCount
                 + ", promień łuku " + radius.ToString("0") + "mm.");
 
             double distance;
@@ -292,7 +319,7 @@ namespace RadiusDimensionMover
             {
                 // Do wnętrza dużej, pustej części - na tyle głęboko, żeby
                 // tekst nie siedział na samej krawędzi.
-                distance = -OutwardSign * facts.maxSizeMm * InsideFraction;
+                distance = -OutwardSign * facts.FaceShortMm * InsideFraction;
                 log("  -> tekst WEWNĄTRZ części (Distance=" + distance.ToString("0") + ").");
             }
             else
@@ -307,7 +334,7 @@ namespace RadiusDimensionMover
                 // RadiusDimension NIE udostępnia swojej pozycji przez API,
                 // nie ma czym tego przeliczyć. Rozmiar części z modelu jest
                 // stabilną i wystarczającą podstawą.
-                distance = OutwardSign * facts.maxSizeMm * OutsideFraction;
+                distance = OutwardSign * facts.FaceLongMm * OutsideFraction;
                 log("  -> tekst NA ZEWNĄTRZ (Distance=" + distance.ToString("0") + ").");
             }
 
@@ -330,7 +357,7 @@ namespace RadiusDimensionMover
                 OriginY = center.Y + dirY * radius * sign,
                 DirX = dirX * sign,
                 DirY = dirY * sign,
-                Length = Math.Abs(distance) + facts.maxSizeMm * LeaderCheckLengthFactor
+                Length = Math.Abs(distance) + facts.FaceLongMm * LeaderCheckLengthFactor
             };
         }
 
@@ -469,39 +496,42 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
-        /// Fakty o części, do której należy wymiar, wzięte WPROST Z MODELU
-        /// (nie z analizy pikseli): największy wymiar bryły w mm oraz liczba
-        /// otworów. To one decydują, czy tekst wymiaru może zostać w środku
-        /// części (patrz TryPlaceSmart).
+        /// Fakty o części, do której należy wymiar, wzięte WPROST Z MODELU:
+        /// wymiary PŁASZCZYZNY blachy (bez grubości) oraz liczba otworów. To
+        /// one decydują, czy tekst wymiaru może zostać w środku części.
         ///
         /// Droga: obiekt rysunkowy Part w tym samym widoku -> jego
         /// ModelIdentifier -> Model.SelectModelObject -> bryła i śruby/otwory.
         /// Rysunkowy Part sam nie ma żadnych danych geometrycznych, dlatego
         /// trzeba zejść do modelu.
         ///
-        /// Za otwory liczymy zarówno śruby (GetBolts - stąd biorą się opisy
-        /// typu "1*Ø13"), jak i wycięcia (GetBooleans), bo otwór może być
-        /// zrobiony jednym albo drugim.
+        /// Z trzech wymiarów bryły ODRZUCAMY NAJMNIEJSZY - to grubość blachy,
+        /// która nic nie mówi o tym, ile miejsca jest na rysunku. Zostają dwa
+        /// wymiary widocznej płaszczyzny; ten mniejszy z nich ogranicza, czy
+        /// tekst zmieści się w obrysie.
+        ///
+        /// Za otwory liczymy śruby (GetBolts - stąd biorą się opisy typu
+        /// "1*Ø13") oraz wycięcia (GetBooleans). UWAGA: GetBooleans zwraca
+        /// wszystkie operacje boole'owskie, więc np. ścięty narożnik też się
+        /// tu policzy jako "otwór" - dlatego jedno i drugie logujemy osobno.
         /// </summary>
-        private static (double maxSizeMm, int holeCount, bool valid) GetPartFacts(RadiusDimension rd, Action<string> log)
+        private static PartFacts GetPartFacts(RadiusDimension rd, Action<string> log)
         {
+            var facts = new PartFacts();
+
             try
             {
                 ViewBase view = rd.GetView();
                 if (view == null)
                 {
-                    return (0, 0, false);
+                    return facts;
                 }
 
                 var model = new Tekla.Structures.Model.Model();
                 if (!model.GetConnectionStatus())
                 {
-                    return (0, 0, false);
+                    return facts;
                 }
-
-                double maxSize = 0;
-                int holes = 0;
-                bool found = false;
 
                 DrawingObjectEnumerator parts = view.GetAllObjects(typeof(Part));
                 while (parts.MoveNext())
@@ -517,7 +547,7 @@ namespace RadiusDimensionMover
                         continue;
                     }
 
-                    found = true;
+                    facts.Valid = true;
 
                     var solid = modelPart.GetSolid();
                     if (solid != null)
@@ -525,29 +555,57 @@ namespace RadiusDimensionMover
                         double dx = Math.Abs(solid.MaximumPoint.X - solid.MinimumPoint.X);
                         double dy = Math.Abs(solid.MaximumPoint.Y - solid.MinimumPoint.Y);
                         double dz = Math.Abs(solid.MaximumPoint.Z - solid.MinimumPoint.Z);
-                        maxSize = Math.Max(maxSize, Math.Max(dx, Math.Max(dy, dz)));
+
+                        // Odrzuć najmniejszy wymiar (grubość) - zostają dwa
+                        // wymiary widocznej płaszczyzny.
+                        double smallest = Math.Min(dx, Math.Min(dy, dz));
+                        double largest = Math.Max(dx, Math.Max(dy, dz));
+                        double middle = dx + dy + dz - smallest - largest;
+
+                        facts.FaceLongMm = Math.Max(facts.FaceLongMm, largest);
+                        facts.FaceShortMm = Math.Max(facts.FaceShortMm, middle);
                     }
 
                     var bolts = modelPart.GetBolts();
                     while (bolts.MoveNext())
                     {
-                        holes++;
+                        facts.BoltCount++;
                     }
 
                     var booleans = modelPart.GetBooleans();
                     while (booleans.MoveNext())
                     {
-                        holes++;
+                        facts.BooleanCount++;
                     }
                 }
-
-                return (maxSize, holes, found && maxSize > 0);
             }
             catch (Exception ex)
             {
                 log?.Invoke("  [DIAG] Nie udało się odczytać danych części z modelu: " + ex.Message);
-                return (0, 0, false);
+                return new PartFacts();
             }
+
+            if (facts.FaceShortMm <= 0)
+            {
+                facts.Valid = false;
+            }
+
+            return facts;
+        }
+
+        /// <summary>
+        /// Wymiary widocznej płaszczyzny części (bez grubości) i liczba
+        /// otworów - podstawa decyzji "wewnątrz czy na zewnątrz".
+        /// </summary>
+        private class PartFacts
+        {
+            public double FaceLongMm;
+            public double FaceShortMm;
+            public int BoltCount;
+            public int BooleanCount;
+            public bool Valid;
+
+            public int HoleCount => BoltCount + BooleanCount;
         }
 
         private static Tekla.Structures.Geometry3d.Point CircumCenter(
