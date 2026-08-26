@@ -10,15 +10,20 @@ rysunku ani w inne teksty/wymiary.
    dokładnie tak samo jak zwykłe makra Tekli – różnica jest tylko taka, że to
    osobny plik .exe, a nie skrypt uruchamiany z wnętrza Tekli.
 2. Bierze aktualnie otwarty rysunek (`GetActiveDrawing()`).
-3. Przechodzi po wszystkich obiektach na arkuszu i wybiera te typu `RadiusDimension`.
-4. Dla każdego z nich ustawia `Attributes.Placing` na tryb **`Free`**
+3. Przechodzi po wszystkich obiektach na arkuszu i wybiera te typu `RadiusDimension`
+   i `Mark` (opisy typu "1*Ø13" ze śrub/otworów, z leaderem).
+4. Najpierw dociąga opisy (`Mark`) bliżej tego, co opisują - ustawia
+   `Attributes.PlacingAttributes` na tryb auto (`IsFixed=false`) z ciasnym
+   zakresem szukania 10-60mm na papierze, zamiast domyślnego "bez limitu",
+   który potrafił wyrzucić opis bardzo daleko.
+5. Dla każdego wymiaru R ustawia `Attributes.Placing` na tryb **`Free`**
    (wbudowany w Teklę silnik auto-rozstawiania wymiarów - ten sam mechanizm,
    co przy łańcuchach wymiarów prostych) z zakresem szukania 15-300mm i
    marginesem 30mm **na papierze** (przeliczane przez skalę widoku,
    `View.Attributes.Scale`), pozwalając obu kierunkom. Tekla sama znajduje
-   wolne miejsce i unika kolizji z innymi tekstami/wymiarami - program nie
-   zgaduje pozycji, tylko prosi Teklę, żeby to zrobiła sama.
-5. Zapisuje zmiany (`Modify()` na każdym wymiarze + `CommitChanges()` na rysunku).
+   wolne miejsce i unika kolizji z innymi tekstami/wymiarami/opisami -
+   program nie zgaduje pozycji, tylko prosi Teklę, żeby to zrobiła sama.
+6. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
 
 Wcześniejsze podejścia (ręczny stały krok, zgadywanie kierunku geometrycznie,
 a nawet analiza pikseli na zrzutach ekranu) okazały się zawodne albo kruche -
@@ -37,8 +42,8 @@ hierarchii klas.
 - **Wykrywanie ręcznej zmiany**: jeśli po przesunięciu ręcznie poprawisz
   pozycję wymiaru w Tekli (albo otworzysz inny rysunek), program to zauważy
   przy powrocie do okna (fokus okna) i sam odblokuje przycisk "Przesuń".
-- **Cofnij**: przywraca oryginalne `Attributes` (w tym tryb Placing) i
-  `Distance` sprzed ostatniego kliknięcia "Przesuń", krok po kroku.
+- **Cofnij**: przywraca oryginalne `Attributes` (w tym tryb Placing) wymiarów
+  R i opisów sprzed ostatniego kliknięcia "Przesuń", krok po kroku.
 - **Log sesji**: każda sesja programu zapisuje pełny log do pliku w
   `logs\session_<data_godzina>.log` obok pliku .exe.
 

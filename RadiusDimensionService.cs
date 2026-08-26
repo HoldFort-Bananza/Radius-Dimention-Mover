@@ -23,6 +23,12 @@ namespace RadiusDimensionMover
         private readonly Stack<List<(RadiusDimension dim, RadiusDimensionAttributes previousAttributes, double previousDistance)>> _undoStack
             = new Stack<List<(RadiusDimension, RadiusDimensionAttributes, double)>>();
 
+        // Analogiczny stos dla opisów (Mark, np. "1*Ø13") przesuwanych bliżej
+        // razem z wymiarami R w tym samym kliknięciu "Przesuń" - zdejmowany
+        // z "Cofnij" w parze z powyższym stosem.
+        private readonly Stack<List<(Mark mark, Mark.MarkAttributes previousAttributes)>> _markUndoStack
+            = new Stack<List<(Mark, Mark.MarkAttributes)>>();
+
         // Wartości Distance ustawione przez OSTATNIE udane "Przesuń" - używane
         // do wykrycia, czy użytkownik ręcznie przesunął któryś wymiar R na
         // rysunku (np. przeciągając go w Tekli) od tego momentu. Jeśli tak,
@@ -48,6 +54,14 @@ namespace RadiusDimensionMover
         // przeliczenie przez Teklę przy przełączaniu Fixed -> Free (patrz
         // komentarz w AutoPlaceWithCollisionAvoidance).
         private const double ResetDistanceMm = 4.0;
+
+        // --- Parametry "dociągania" opisów (Mark, np. "1*Ø13") bliżej -
+        // domyślnie mają MaximalDistance=0 (bez limitu), przez co potrafią
+        // wylądować bardzo daleko od tego, co opisują. Ograniczamy zakres,
+        // żeby zostały blisko, ale wciąż z dala od kolizji. ---
+        private const double MarkSearchMarginMm = 15.0;
+        private const double MarkMinimalDistanceMm = 10.0;
+        private const double MarkMaximalDistanceMm = 60.0;
 
         /// <summary>
         /// AUTOMATYCZNE rozstawianie wszystkich wymiarów R na aktywnym
@@ -112,19 +126,31 @@ namespace RadiusDimensionMover
             }
 
             var radiusDimensions = new List<RadiusDimension>();
+            var marks = new List<Mark>();
             DrawingObjectEnumerator objectEnum = sheet.GetAllObjects();
             while (objectEnum.MoveNext())
             {
-                if (objectEnum.Current is RadiusDimension rd)
+                var current = objectEnum.Current;
+                if (current is RadiusDimension rd)
                 {
                     radiusDimensions.Add(rd);
+                }
+                else if (current is Mark mark)
+                {
+                    marks.Add(mark);
                 }
             }
 
             result.TotalCount = radiusDimensions.Count;
-            log("Znaleziono " + result.TotalCount + " wymiar(ów) R.");
+            log("Znaleziono " + result.TotalCount + " wymiar(ów) R oraz " + marks.Count + " opis(ów) (Mark).");
 
             var scaleCache = new Dictionary<ViewBase, double>();
+
+            // Najpierw dociągamy opisy (np. "1*Ø13") bliżej - zanim wymiary R
+            // szukają wolnego miejsca, żeby nie musiały omijać opisów
+            // wyrzuconych daleko poza to, co realnie opisują.
+            var markMoveHistory = TightenMarks(marks, activeDrawing, scaleCache, log);
+            _markUndoStack.Push(markMoveHistory);
 
             foreach (var rd in radiusDimensions)
             {
@@ -190,12 +216,78 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
-        /// Zwraca skalę widoku (np. 5.0 dla rysunku szczegółowego "5:1"), w
-        /// którym leży dany wymiar R - liczone raz na widok i zapamiętane w
-        /// cache. Bezpieczny fallback = 1.0 (stare, "1mm = 1mm" zachowanie),
-        /// jeśli nie da się odczytać widoku/skali.
+        /// Dociąga opisy (Mark, np. "1*Ø13") bliżej tego, co opisują -
+        /// domyślnie mają MaximalDistance=0 (bez limitu), więc Tekla czasem
+        /// wyrzuca je bardzo daleko szukając wolnego miejsca. Ten sam
+        /// dwuetapowy wzorzec reset-Fixed-potem-Free co dla wymiarów R, bo
+        /// MarkBase.Attributes.PlacingAttributes dzieli tę samą logikę
+        /// wyszukiwania (PlacingDistanceAttributes) co RadiusDimension.
         /// </summary>
-        private static double GetViewScale(RadiusDimension rd, Dictionary<ViewBase, double> cache, Action<string> log)
+        private List<(Mark, Mark.MarkAttributes)> TightenMarks(
+            List<Mark> marks, Drawing activeDrawing, Dictionary<ViewBase, double> scaleCache, Action<string> log)
+        {
+            var history = new List<(Mark, Mark.MarkAttributes)>();
+
+            foreach (var mark in marks)
+            {
+                try
+                {
+                    Mark.MarkAttributes originalAttrs = mark.Attributes;
+                    double scale = GetViewScale(mark, scaleCache, log);
+
+                    // Krok 1: reset "Fixed" z małą, neutralną odległością -
+                    // wymusza świeże przeliczenie przy przełączeniu na "auto"
+                    // (IsFixed=false), zamiast używać ewentualnego cache.
+                    var resetAttrs = mark.Attributes;
+                    resetAttrs.PlacingAttributes = new PlacingAttributes(
+                        true,
+                        new PlacingDistanceAttributes(2.0, ResetDistanceMm / scale),
+                        resetAttrs.PlacingAttributes.PlacingQuarter);
+                    mark.Attributes = resetAttrs;
+                    mark.Modify();
+                    activeDrawing.CommitChanges();
+                    Thread.Sleep(200);
+
+                    // Krok 2: "auto" (IsFixed=false) z ciasnym zakresem
+                    // wyszukiwania (mm na papierze -> jednostki modelu), żeby
+                    // opis został blisko, ale wciąż bez kolizji.
+                    var tightAttrs = mark.Attributes;
+                    tightAttrs.PlacingAttributes = new PlacingAttributes(
+                        false,
+                        new PlacingDistanceAttributes(MarkSearchMarginMm / scale, MarkMinimalDistanceMm / scale, MarkMaximalDistanceMm / scale),
+                        tightAttrs.PlacingAttributes.PlacingQuarter);
+                    mark.Attributes = tightAttrs;
+
+                    bool modifyResult = mark.Modify();
+                    activeDrawing.CommitChanges();
+                    Thread.Sleep(200);
+
+                    if (modifyResult)
+                    {
+                        history.Add((mark, originalAttrs));
+                        log("  Opis dociągnięty bliżej (zakres " + MarkMinimalDistanceMm + "-" + MarkMaximalDistanceMm + "mm na papierze).");
+                    }
+                    else
+                    {
+                        log("  Jeden opis nie został zmodyfikowany (Modify() zwróciło false).");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log("  Pominięto jeden opis – błąd: " + ex.Message);
+                }
+            }
+
+            return history;
+        }
+
+        /// <summary>
+        /// Zwraca skalę widoku (np. 5.0 dla rysunku szczegółowego "5:1"), w
+        /// którym leży dany obiekt (wymiar R, opis...) - liczone raz na
+        /// widok i zapamiętane w cache. Bezpieczny fallback = 1.0 (stare,
+        /// "1mm = 1mm" zachowanie), jeśli nie da się odczytać widoku/skali.
+        /// </summary>
+        private static double GetViewScale(DrawingObject rd, Dictionary<ViewBase, double> cache, Action<string> log)
         {
             ViewBase viewBase;
             try
@@ -297,6 +389,26 @@ namespace RadiusDimensionMover
                 catch (Exception ex)
                 {
                     log("  Pominięto jeden wymiar R przy cofaniu – błąd: " + ex.Message);
+                }
+            }
+
+            // Cofnij w tym samym kroku dociągnięte opisy (Mark) - zdejmowane
+            // ze stosu w parze z powyższym (jedno "Przesuń" = jeden wpis na
+            // obu stosach, nawet jeśli na arkuszu nie było żadnych opisów).
+            if (_markUndoStack.Count > 0)
+            {
+                var lastMarkMove = _markUndoStack.Pop();
+                foreach (var entry in lastMarkMove)
+                {
+                    try
+                    {
+                        entry.mark.Attributes = entry.previousAttributes;
+                        entry.mark.Modify();
+                    }
+                    catch (Exception ex)
+                    {
+                        log("  Pominięto jeden opis przy cofaniu – błąd: " + ex.Message);
+                    }
                 }
             }
 
