@@ -229,7 +229,27 @@ namespace RadiusDimensionMover
 
             activeDrawing.CommitChanges();
 
-            NudgeMarksOffLeaders(marks, leaderRays, log);
+            // Przeszkody, na które nie wolno wepchnąć opisu - linie wymiarowe
+            // odczytane z widoku. Zbierane raz, przed odsuwaniem.
+            var obstacles = new List<Segment>();
+            if (radiusDimensions.Count > 0)
+            {
+                try
+                {
+                    ViewBase view = radiusDimensions[0].GetView();
+                    if (view != null)
+                    {
+                        obstacles = CollectDimensionLines(view, log);
+                        log("  Wykryto " + obstacles.Count + " lini(i) wymiarowych jako przeszkody.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log("  [DIAG] Nie udało się zebrać linii wymiarowych: " + ex.Message);
+                }
+            }
+
+            NudgeMarksOffLeaders(marks, leaderRays, obstacles, log);
             activeDrawing.CommitChanges();
 
             return result;
@@ -371,118 +391,188 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
-        /// DELIKATNIE odsuwa w bok te opisy (Mark), które leżą na linii
-        /// odniesienia któregoś wymiaru R - żeby nie zasłaniały wymiaru.
-        ///
-        /// Liczone analitycznie, jednym przejściem: rzut środka opisu na
-        /// półprostą leadera daje odległość wzdłuż linii i odchyłkę w bok.
-        /// Jeśli odchyłka jest mniejsza niż potrzebny prześwit (połowa
-        /// przekątnej opisu + margines), opis przesuwamy PROSTOPADLE do
-        /// leadera dokładnie o brakującą różnicę - ani o milimetr więcej.
-        /// Żadnego szukania po kroku, żadnych prób.
-        ///
-        /// Przesuwany opis musi mieć wyłączone automatyczne rozstawianie
-        /// (IsFixed=true), inaczej Tekla przy najbliższej okazji przeliczyłaby
-        /// jego pozycję i przesunięcie by zniknęło.
+        /// Odcinek w przestrzeni widoku - linia wymiarowa albo inny obiekt,
+        /// którego opis ma nie zasłaniać.
         /// </summary>
-        private static void NudgeMarksOffLeaders(List<Mark> marks, List<LeaderRay> rays, Action<string> log)
+        private class Segment
+        {
+            public double X1, Y1, X2, Y2;
+        }
+
+        /// <summary>
+        /// Opis traktowany jako okrąg: środek + promień równy połowie
+        /// przekątnej jego obrysu. Upraszcza całą matematykę do odległości
+        /// punkt-odcinek, a dla małych bloków tekstu jest wystarczająco
+        /// dokładne.
+        /// </summary>
+        private class MarkDisc
+        {
+            public Mark Mark;
+            public double X, Y, Radius;
+        }
+
+        /// <summary>
+        /// DELIKATNIE odsuwa te opisy (Mark), które leżą na linii odniesienia
+        /// wymiaru R - ale tylko w miejsce, które jest REALNIE WOLNE.
+        ///
+        /// Wcześniejsza wersja przesuwała opis prostopadle do leadera w tę
+        /// stronę, w której już był, i nie sprawdzała, co jest w miejscu
+        /// docelowym - potrafiła więc wepchnąć opis prosto w linię wymiarową.
+        /// Teraz zbieramy z rysunku przeszkody (linie wymiarowe, inne opisy,
+        /// pozostałe leadery) i wybieramy spośród kilku kandydatów ten, który
+        /// daje wymagany prześwit od wszystkiego.
+        ///
+        /// Kandydaci to obie strony prostopadłej × kilka wielokrotności
+        /// brakującej różnicy. Ocena jest czystą matematyką na danych już
+        /// wczytanych z API - żadnych dodatkowych zapytań do Tekli, więc
+        /// nadal jest to jedno przejście i efekt jest natychmiastowy.
+        /// </summary>
+        private static void NudgeMarksOffLeaders(
+            List<Mark> marks, List<LeaderRay> rays, List<Segment> obstacles, Action<string> log)
         {
             if (rays.Count == 0)
             {
                 return;
             }
 
-            int moved = 0;
-
+            // Opisy jako okręgi - potrzebne i jako obiekty do przesuwania, i
+            // jako wzajemne przeszkody.
+            var discs = new List<MarkDisc>();
             foreach (var mark in marks)
             {
                 try
                 {
                     var box = mark.GetAxisAlignedBoundingBox();
-                    double width = Math.Abs(box.MaxPoint.X - box.MinPoint.X);
-                    double height = Math.Abs(box.MaxPoint.Y - box.MinPoint.Y);
-                    if (width < 1e-6 && height < 1e-6)
+                    double w = Math.Abs(box.MaxPoint.X - box.MinPoint.X);
+                    double h = Math.Abs(box.MaxPoint.Y - box.MinPoint.Y);
+                    if (w < 1e-6 && h < 1e-6)
                     {
-                        // Opis bez geometrii (np. pusty) - nie ma co przesuwać.
-                        continue;
+                        continue;   // opis bez geometrii - nie ma co przesuwać
                     }
 
-                    double cx = (box.MinPoint.X + box.MaxPoint.X) / 2.0;
-                    double cy = (box.MinPoint.Y + box.MaxPoint.Y) / 2.0;
+                    discs.Add(new MarkDisc
+                    {
+                        Mark = mark,
+                        X = (box.MinPoint.X + box.MaxPoint.X) / 2.0,
+                        Y = (box.MinPoint.Y + box.MaxPoint.Y) / 2.0,
+                        Radius = 0.5 * Math.Sqrt(w * w + h * h)
+                    });
+                }
+                catch (Exception ex)
+                {
+                    log("  Pominięto jeden opis przy odsuwaniu – błąd: " + ex.Message);
+                }
+            }
 
-                    // Prześwit liczony z przekątnej, bo leader może biec pod
-                    // dowolnym kątem - wtedy "w poprzek" opisu jest właśnie
-                    // przekątna, nie sama wysokość.
-                    double needed = 0.5 * Math.Sqrt(width * width + height * height) + MarkClearanceMm;
+            int moved = 0;
 
-                    double bestPushX = 0, bestPushY = 0, worstDeficit = 0;
+            foreach (var disc in discs)
+            {
+                try
+                {
+                    // Który leader jest naruszony i jak bardzo.
+                    LeaderRay worstRay = null;
+                    double worstDeficit = 0;
 
                     foreach (var ray in rays)
                     {
-                        double vx = cx - ray.OriginX;
-                        double vy = cy - ray.OriginY;
-
-                        double along = vx * ray.DirX + vy * ray.DirY;
-                        if (along < 0 || along > ray.Length)
+                        double lateral = LateralDistanceToRay(disc.X, disc.Y, ray);
+                        if (double.IsNaN(lateral))
                         {
-                            // Opis jest za łukiem albo dalej niż leader -
-                            // nie koliduje.
-                            continue;
+                            continue;   // opis poza odcinkiem leadera
                         }
 
-                        double latX = vx - ray.DirX * along;
-                        double latY = vy - ray.DirY * along;
-                        double lateral = Math.Sqrt(latX * latX + latY * latY);
-
-                        double deficit = needed - lateral;
-                        if (deficit <= 0)
-                        {
-                            continue;
-                        }
-
-                        // Kierunek odsunięcia: prostopadle do leadera, w tę
-                        // stronę, w której opis już jest. Gdy leży dokładnie
-                        // na linii, wybieramy dowolną prostopadłą.
-                        double pushX, pushY;
-                        if (lateral > 1e-6)
-                        {
-                            pushX = latX / lateral;
-                            pushY = latY / lateral;
-                        }
-                        else
-                        {
-                            pushX = -ray.DirY;
-                            pushY = ray.DirX;
-                        }
-
+                        double deficit = disc.Radius + MarkClearanceMm - lateral;
                         if (deficit > worstDeficit)
                         {
                             worstDeficit = deficit;
-                            bestPushX = pushX * deficit;
-                            bestPushY = pushY * deficit;
+                            worstRay = ray;
                         }
                     }
 
-                    if (worstDeficit <= 0)
+                    if (worstRay == null)
+                    {
+                        continue;   // nic nie koliduje
+                    }
+
+                    // Kandydaci: obie strony prostopadłej do naruszonego
+                    // leadera, kilka wielokrotności brakującej różnicy.
+                    double perpX = -worstRay.DirY;
+                    double perpY = worstRay.DirX;
+
+                    double bestScore = double.NegativeInfinity;
+                    double bestDx = 0, bestDy = 0;
+                    bool found = false;
+
+                    foreach (double side in new[] { 1.0, -1.0 })
+                    {
+                        foreach (double factor in new[] { 1.0, 1.6, 2.4, 3.5 })
+                        {
+                            double dist = worstDeficit * factor;
+                            double dx = perpX * side * dist;
+                            double dy = perpY * side * dist;
+
+                            double clearance = MinClearance(
+                                disc.X + dx, disc.Y + dy, disc.Radius,
+                                disc, discs, rays, obstacles);
+
+                            // Wolimy najmniejsze przesunięcie, które daje
+                            // wymagany prześwit. Jeśli żadne nie daje -
+                            // bierzemy to z największym prześwitem.
+                            if (clearance >= MarkClearanceMm)
+                            {
+                                if (!found)
+                                {
+                                    found = true;
+                                    bestDx = dx;
+                                    bestDy = dy;
+                                    bestScore = clearance;
+                                }
+                                break;      // ta strona załatwiona najmniejszym krokiem
+                            }
+
+                            if (!found && clearance > bestScore)
+                            {
+                                bestScore = clearance;
+                                bestDx = dx;
+                                bestDy = dy;
+                            }
+                        }
+
+                        if (found)
+                        {
+                            break;
+                        }
+                    }
+
+                    if (Math.Abs(bestDx) < 1e-9 && Math.Abs(bestDy) < 1e-9)
                     {
                         continue;
                     }
 
-                    var attrs = mark.Attributes;
+                    var attrs = disc.Mark.Attributes;
                     attrs.PlacingAttributes = new PlacingAttributes(
                         true,
                         attrs.PlacingAttributes.PlacingDistance,
                         attrs.PlacingAttributes.PlacingQuarter);
-                    mark.Attributes = attrs;
+                    disc.Mark.Attributes = attrs;
 
-                    var p = mark.InsertionPoint;
-                    mark.InsertionPoint = new Tekla.Structures.Geometry3d.Point(
-                        p.X + bestPushX, p.Y + bestPushY, p.Z);
+                    var p = disc.Mark.InsertionPoint;
+                    disc.Mark.InsertionPoint = new Tekla.Structures.Geometry3d.Point(
+                        p.X + bestDx, p.Y + bestDy, p.Z);
 
-                    if (mark.Modify())
+                    if (disc.Mark.Modify())
                     {
                         moved++;
-                        log("  Opis odsunięty o " + worstDeficit.ToString("0") + "mm w bok, żeby nie zasłaniał wymiaru R.");
+                        double shift = Math.Sqrt(bestDx * bestDx + bestDy * bestDy);
+                        log("  Opis odsunięty o " + shift.ToString("0") + "mm"
+                            + (found ? "" : " (nie udało się uzyskać pełnego prześwitu)")
+                            + " - prześwit " + bestScore.ToString("0") + "mm.");
+
+                        // Zaktualizuj pozycję w liście, żeby kolejne opisy
+                        // widziały go tam, gdzie faktycznie jest.
+                        disc.X += bestDx;
+                        disc.Y += bestDy;
                     }
                 }
                 catch (Exception ex)
@@ -495,6 +585,183 @@ namespace RadiusDimensionMover
             {
                 log("  Żaden opis nie kolidował z wymiarami R.");
             }
+        }
+
+        /// <summary>
+        /// Odchyłka punktu od półprostej leadera, albo NaN gdy punkt leży poza
+        /// jej sprawdzanym odcinkiem (za łukiem albo dalej niż leader).
+        /// </summary>
+        private static double LateralDistanceToRay(double x, double y, LeaderRay ray)
+        {
+            double vx = x - ray.OriginX;
+            double vy = y - ray.OriginY;
+            double along = vx * ray.DirX + vy * ray.DirY;
+
+            if (along < 0 || along > ray.Length)
+            {
+                return double.NaN;
+            }
+
+            double latX = vx - ray.DirX * along;
+            double latY = vy - ray.DirY * along;
+            return Math.Sqrt(latX * latX + latY * latY);
+        }
+
+        /// <summary>
+        /// Najmniejszy prześwit między opisem postawionym w (x,y) a
+        /// czymkolwiek na rysunku: liniami wymiarowymi, pozostałymi opisami i
+        /// liniami odniesienia wymiarów R. Wartość ujemna = nachodzi.
+        /// </summary>
+        private static double MinClearance(
+            double x, double y, double radius,
+            MarkDisc self, List<MarkDisc> allMarks, List<LeaderRay> rays, List<Segment> obstacles)
+        {
+            double min = double.PositiveInfinity;
+
+            foreach (var seg in obstacles)
+            {
+                double d = PointSegmentDistance(x, y, seg.X1, seg.Y1, seg.X2, seg.Y2) - radius;
+                if (d < min) min = d;
+            }
+
+            foreach (var other in allMarks)
+            {
+                if (ReferenceEquals(other, self))
+                {
+                    continue;
+                }
+                double dx = x - other.X, dy = y - other.Y;
+                double d = Math.Sqrt(dx * dx + dy * dy) - radius - other.Radius;
+                if (d < min) min = d;
+            }
+
+            foreach (var ray in rays)
+            {
+                double lateral = LateralDistanceToRay(x, y, ray);
+                if (double.IsNaN(lateral))
+                {
+                    continue;
+                }
+                double d = lateral - radius;
+                if (d < min) min = d;
+            }
+
+            return min;
+        }
+
+        private static double PointSegmentDistance(
+            double px, double py, double x1, double y1, double x2, double y2)
+        {
+            double dx = x2 - x1, dy = y2 - y1;
+            double lenSq = dx * dx + dy * dy;
+
+            if (lenSq < 1e-12)
+            {
+                return Math.Sqrt((px - x1) * (px - x1) + (py - y1) * (py - y1));
+            }
+
+            double t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+            t = Math.Max(0, Math.Min(1, t));
+
+            double cx = x1 + t * dx, cy = y1 + t * dy;
+            return Math.Sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
+        }
+
+        /// <summary>
+        /// Zbiera linie wymiarowe z widoku jako odcinki w przestrzeni widoku -
+        /// to one są główną przeszkodą, na którą nie wolno wepchnąć opisu.
+        ///
+        /// `StraightDimension.StartPoint/EndPoint` to punkty leżące NA CZĘŚCI
+        /// (potwierdzone: dla blachy 175 x 168 wychodziły punkty typu (0,-64),
+        /// (174.7,-84)), a sama linia wymiarowa jest odsunięta od nich
+        /// prostopadle o `Distance` ZESTAWU. Stronę odsunięcia wybieramy tak,
+        /// żeby linia wypadła DALEJ od środka części - to zwykła konwencja
+        /// rysunkowa.
+        ///
+        /// Uwaga: bierzemy `Distance` z ZESTAWU, nie z pojedynczych wymiarów
+        /// wewnątrz łańcucha - tam ta wartość znaczy coś innego (na blachy
+        /// 175mm dawała 196mm, czyli bliżej długości mierzonego odcinka).
+        /// </summary>
+        private static List<Segment> CollectDimensionLines(ViewBase view, Action<string> log)
+        {
+            var segments = new List<Segment>();
+            var raw = new List<(double x1, double y1, double x2, double y2, double dist)>();
+            double sumX = 0, sumY = 0;
+            int n = 0;
+
+            try
+            {
+                DrawingObjectEnumerator sets = view.GetAllObjects(typeof(StraightDimensionSet));
+                while (sets.MoveNext())
+                {
+                    if (!(sets.Current is StraightDimensionSet set))
+                    {
+                        continue;
+                    }
+
+                    double setDistance = Math.Abs(set.Distance);
+
+                    DrawingObjectEnumerator inner = set.GetObjects();
+                    while (inner.MoveNext())
+                    {
+                        if (!(inner.Current is StraightDimension sd))
+                        {
+                            continue;
+                        }
+
+                        var a = sd.StartPoint;
+                        var b = sd.EndPoint;
+                        raw.Add((a.X, a.Y, b.X, b.Y, setDistance));
+                        sumX += a.X + b.X;
+                        sumY += a.Y + b.Y;
+                        n += 2;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke("  [DIAG] Nie udało się odczytać linii wymiarowych: " + ex.Message);
+                return segments;
+            }
+
+            if (n == 0)
+            {
+                return segments;
+            }
+
+            // Środek części przybliżony punktami pomiarowymi - one leżą na
+            // części, więc ich średnia jest wystarczająco blisko środka.
+            double centerX = sumX / n, centerY = sumY / n;
+
+            foreach (var r in raw)
+            {
+                double dx = r.x2 - r.x1, dy = r.y2 - r.y1;
+                double len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 1e-9)
+                {
+                    continue;
+                }
+
+                double perpX = -dy / len, perpY = dx / len;
+
+                // Wybierz stronę oddalającą się od środka części.
+                double midX = (r.x1 + r.x2) / 2.0, midY = (r.y1 + r.y2) / 2.0;
+                if ((midX - centerX) * perpX + (midY - centerY) * perpY < 0)
+                {
+                    perpX = -perpX;
+                    perpY = -perpY;
+                }
+
+                segments.Add(new Segment
+                {
+                    X1 = r.x1 + perpX * r.dist,
+                    Y1 = r.y1 + perpY * r.dist,
+                    X2 = r.x2 + perpX * r.dist,
+                    Y2 = r.y2 + perpY * r.dist
+                });
+            }
+
+            return segments;
         }
 
         private static double Distance2D(Tekla.Structures.Geometry3d.Point a, Tekla.Structures.Geometry3d.Point b)
