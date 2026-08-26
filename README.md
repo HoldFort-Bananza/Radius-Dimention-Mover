@@ -16,13 +16,10 @@ rysunku ani w inne teksty/wymiary.
    `Attributes.PlacingAttributes` na tryb auto (`IsFixed=false`) z ciasnym
    zakresem szukania 10-60mm na papierze, zamiast domyślnego "bez limitu",
    który potrafił wyrzucić opis bardzo daleko.
-5. Dla każdego wymiaru R liczy kierunek "na zewnątrz części" **z geometrii
-   łuku** (`ArcPoint1/2/3` → środek okręgu; dla wypukłego zaokrąglenia
-   narożnika środek leży po stronie materiału, więc kierunek "od środka na
-   zewnątrz" = kierunek "od materiału") i sprawdza jednym zrzutem ekranu,
-   czy znak `+`/`-` w Tekli zgadza się z tym kierunkiem.
-6. **Decyduje, czy tekst może zostać WEWNĄTRZ części, czy musi iść NA
-   ZEWNĄTRZ** - na podstawie danych z modelu, nie analizy obrazu:
+5. Dla każdego wymiaru R liczy geometrię łuku z `ArcPoint1/2/3` (środek
+   okręgu i promień) - wszystko w jednostkach modelu, tej samej przestrzeni
+   co `Distance`.
+6. **Decyduje, czy tekst zostaje WEWNĄTRZ części, czy idzie NA ZEWNĄTRZ:**
    - część **większa niż 300mm i bez żadnego otworu** → tekst zostaje w
      środku (jest tam pusto, rysunek jest najbardziej zwarty),
    - część **z otworem albo mniejsza niż 300mm** → tekst idzie na zewnątrz,
@@ -31,35 +28,44 @@ rysunku ani w inne teksty/wymiary.
    Rozmiar bierze z bryły części (`Part.GetSolid()`), a otwory z
    `GetBolts()` + `GetBooleans()` - droga: rysunkowy `Part.ModelIdentifier`
    → `Model.SelectModelObject`.
-7. Jeśli tekst idzie na zewnątrz, odsuwa wymiar krok po kroku i po każdym
-   kroku **mierzy na zrzucie ekranu, jaka część nowo narysowanego wymiaru
-   nałożyła się na to, co już tam było** (piksel w piksel, bez zgadywania
-   pozycji tekstu - patrz `WindowCapture.GetOverlapWithExisting`). Wybiera
-   **najbliższą** pozycję, w której nic się nie nakłada, żeby rysunek został
-   zwarty. Krawędź arkusza (pomarańczowa ramka) jest twardym limitem -
-   program nigdy nie wyjdzie poza nią. Jeśli z jakiegokolwiek powodu (np.
-   zdegenerowana geometria, okno Tekli nie znalezione) nie da się tego
-   ustalić, wymiar spada do wbudowanego w Teklę trybu **`Placing=Free`** jako
+7. Ustawia `Distance` jako ułamek rzeczywistego rozmiaru części (ze znakiem
+   zależnym od tego, czy tekst ma iść na zewnątrz, czy do wnętrza). Jeśli
+   geometrii nie da się policzyć (np. zdegenerowany łuk) albo nie ma danych z
+   modelu, wymiar spada do wbudowanego w Teklę trybu **`Placing=Free`** jako
    bezpiecznego wariantu awaryjnego.
 8. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
 
-Odległości szukania są **ułamkiem rzeczywistego rozmiaru części** (z bryły w
-modelu), a nie stałymi milimetrami - `Distance` i `ArcPoint1/2/3` są w
-jednostkach MODELU, więc stałe "mm" znaczyły zupełnie inną odległość na
-detalu 5:1 niż na blachy 1:5. Rozmiaru **nie** bierzemy z bounding boxa
-widoku: ten rośnie, gdy wymiary zostaną wyrzucone daleko, co tworzyło pętlę
-sprzężenia (każde kolejne uruchomienie liczyło coraz większe odległości - na
-blachy 175mm doszło do 2600mm).
+**Program działa wyłącznie na danych z Tekla Open API** - nie robi zrzutów
+ekranu, nie analizuje pikseli, nie czyta okna Tekli. Wszystkie decyzje
+wynikają ze współrzędnych i właściwości obiektów.
 
-### Czego się nie da i dlaczego
+Odległości są **ułamkiem rzeczywistego rozmiaru części** (z bryły w modelu), a
+nie stałymi milimetrami - `Distance` i `ArcPoint1/2/3` są w jednostkach
+MODELU, więc stałe "mm" znaczyły zupełnie inną odległość na detalu 5:1 niż na
+blachy 1:5. Rozmiaru **nie** bierzemy z bounding boxa widoku: ten rośnie, gdy
+wymiary zostaną wyrzucone daleko, co tworzyło pętlę sprzężenia (każde kolejne
+uruchomienie liczyło coraz większe odległości - na blachy 175mm doszło do
+2600mm).
 
+### Znane ograniczenia
+
+- **`RadiusDimension` nie udostępnia swojej pozycji na rysunku.** `ArcPoint1/2/3`
+  opisują sam łuk i nie zmieniają się przy przesuwaniu tekstu, nie ma
+  bounding boxa, `GetRelatedObjects()` zwraca pustkę. Dlatego program nie
+  może sprawdzić, gdzie tekst faktycznie wylądował - ustawia `Distance` i
+  ufa Tekli.
+- Z tego samego powodu **znak `Distance` (która strona to "na zewnątrz")
+  jest stałą w kodzie** (`OutwardSign`), ustaloną na rzeczywistych rysunkach -
+  nie da się go wyliczyć z API. Gdyby kiedyś wyszło odwrotnie, wystarczy
+  zmienić tam `-1` na `+1`.
+- **`StraightDimensionSet.Distance` nie jest w tej samej skali co
+  `RadiusDimension.Distance`** - na blachy 175mm łańcuchy raportują 25-120,
+  a wstawienie 120 wyrzuca tekst poza arkusz. Dlatego odległość liczymy z
+  rozmiaru części, nie z odsunięcia istniejących łańcuchów.
 - **`Placing=Free`** (wbudowany silnik Tekli) unika kolizji, ale kąt/stronę
   wybiera sam, "na sztywno" per wymiar, i żaden atrybut (`Direction`
   Positive/Negative) tego nie zmienia - sprawdzone trzema niezależnymi
   testami. Dlatego jest tylko wariantem awaryjnym.
-- **Wykrywanie konturu części po kolorze pikseli** zawiodło - linie i
-  strzałki wymiarowe są rysowane tym samym prawie-białym kolorem co krawędzie
-  części, więc wykryty "kontur" wychodził na niemal cały rysunek.
 
 ## Bezpieczniki
 
