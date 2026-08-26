@@ -52,6 +52,23 @@ namespace RadiusDimensionMover
         // 175mm daje ~18mm, czyli tuż za opisem elementu.
         private const double OutsideFraction = 0.10;
 
+        // Jak długi odcinek linii odniesienia sprawdzamy pod kątem kolizji z
+        // opisami - jako wielokrotność rozmiaru części, DODANA do Distance.
+        //
+        // Musi być hojne, bo API nie podaje pozycji tekstu wymiaru, a tekst
+        // ląduje znacznie dalej, niż sugeruje samo Distance: na blachy 175mm
+        // przy Distance=17 opis "1*Ø13" stykający się z tekstem wymiaru leżał
+        // ~140mm wzdłuż promienia. Zbyt krótki zasięg powodował, że program w
+        // ogóle nie widział kolizji. Przeszacowanie jest tu tanie: opis leżący
+        // dalej i tak zostanie odsunięty tylko w bok i tylko o brakującą
+        // różnicę, więc zostaje przy swoim otworze.
+        private const double LeaderCheckLengthFactor = 1.5;
+
+        // Minimalny prześwit między opisem (Mark) a linią odniesienia wymiaru
+        // R, ponad połowę przekątnej opisu (mm w modelu). Odsunięcie ma być
+        // delikatne - tyle, żeby się nie nachodziły.
+        private const double MarkClearanceMm = 12.0;
+
         // --- Parametry "dociągania" opisów (Mark, np. "1*Ø13") bliżej -
         // domyślnie mają MaximalDistance=0 (bez limitu), przez co potrafią
         // wylądować bardzo daleko od tego, co opisują. Ograniczamy zakres,
@@ -141,10 +158,18 @@ namespace RadiusDimensionMover
 
             var scaleCache = new Dictionary<ViewBase, double>();
 
-            // Najpierw dociągamy opisy (np. "1*Ø13") bliżej - zanim wymiary R
-            // szukają wolnego miejsca, żeby nie musiały omijać opisów
-            // wyrzuconych daleko poza to, co realnie opisują.
-            TightenMarks(marks, activeDrawing, scaleCache, log);
+            // Kolejność ma znaczenie i jest przemyślana: najpierw opisy
+            // dociągane są automatem Tekli (żeby nie wisiały daleko), potem
+            // wymiary R lądują na policzonych pozycjach, a na końcu te opisy,
+            // które trafiły na linię odniesienia wymiaru, są DELIKATNIE
+            // odsuwane w bok. Każdy etap to jedno przejście po obiektach -
+            // żadnego szukania po kroku ani prób "aż się uda".
+            TightenMarks(marks, scaleCache, log);
+            activeDrawing.CommitChanges();
+
+            // Promienie linii odniesienia wymiarów R - potrzebne w ostatnim
+            // etapie, żeby wiedzieć, czego opisy mają nie zasłaniać.
+            var leaderRays = new List<LeaderRay>();
 
             foreach (var rd in radiusDimensions)
             {
@@ -152,7 +177,8 @@ namespace RadiusDimensionMover
                 {
                     double scale = GetViewScale(rd, scaleCache, log);
 
-                    if (!TryPlaceByGeometry(rd, activeDrawing, log))
+                    var ray = TryPlaceByGeometry(rd, log);
+                    if (ray == null)
                     {
                         // Geometria się nie udała (np. zdegenerowany łuk) -
                         // zostaje wbudowany silnik Tekli jako wariant
@@ -163,6 +189,10 @@ namespace RadiusDimensionMover
                             continue;
                         }
                     }
+                    else
+                    {
+                        leaderRays.Add(ray);
+                    }
 
                     result.MovedCount++;
                 }
@@ -172,26 +202,41 @@ namespace RadiusDimensionMover
                 }
             }
 
+            activeDrawing.CommitChanges();
+
+            NudgeMarksOffLeaders(marks, leaderRays, log);
+            activeDrawing.CommitChanges();
+
             return result;
         }
 
         /// <summary>
+        /// Półprosta, po której biegnie linia odniesienia (leader) wymiaru R:
+        /// startuje na łuku i idzie na zewnątrz. Tekst wymiaru siedzi na jej
+        /// końcu. Opisy (Mark) mają na niej nie leżeć.
+        /// </summary>
+        private class LeaderRay
+        {
+            public double OriginX;
+            public double OriginY;
+            public double DirX;
+            public double DirY;
+            public double Length;
+        }
+
+        /// <summary>
         /// Ustawia JEDEN wymiar R, licząc wszystko WYŁĄCZNIE ze współrzędnych
-        /// z API Tekli - żadnych zrzutów ekranu ani analizy pikseli.
+        /// z API Tekli - żadnych zrzutów ekranu, żadnego szukania po kroku.
+        /// Jedno wyliczenie, jedno Modify().
         ///
         /// Dane wejściowe (wszystko w jednostkach MODELU, ta sama przestrzeń
-        /// co Distance):
-        /// - `ArcPoint1/2/3` -> środek i promień łuku (circumcenter),
-        /// - bryła części z modelu -> rozmiar i liczba otworów,
-        /// - `StraightDimensionSet.Distance` -> jak daleko od elementu leżą
-        ///   już istniejące łańcuchy wymiarowe.
+        /// co Distance): ArcPoint1/2/3 -> środek i promień łuku
+        /// (circumcenter), bryła części z modelu -> rozmiar i liczba otworów.
         ///
         /// Zasada rozstawiania (ustalona z użytkownikiem):
         /// - część większa niż MinPartSizeForInsideMm i BEZ otworów -> tekst
         ///   zostaje wewnątrz części (jest tam pusto),
-        /// - część z otworem albo mniejsza -> tekst na zewnątrz, odsunięty o
-        ///   OutsideOffsetMm ZA najdalszy istniejący łańcuch wymiarowy, żeby
-        ///   współgrał z opisem elementu.
+        /// - część z otworem albo mniejsza -> tekst na zewnątrz.
         ///
         /// ZNAK Distance: ujemny = NA ZEWNĄTRZ (od środka łuku), dodatni = do
         /// wnętrza części. Ustalone empirycznie - RadiusDimension nie
@@ -199,8 +244,12 @@ namespace RadiusDimensionMover
         /// API; kilkanaście niezależnych pomiarów na trzech różnych rysunkach
         /// dało za każdym razem ten sam wynik. Jeśli kiedyś okaże się
         /// odwrotnie, wystarczy odwrócić OutwardSign.
+        ///
+        /// Zwraca półprostą leadera (do odsuwania opisów) albo null, gdy
+        /// geometrii nie da się policzyć - wtedy wywołujący spada do
+        /// PlaceUsingFreeMode.
         /// </summary>
-        private bool TryPlaceByGeometry(RadiusDimension rd, Drawing activeDrawing, Action<string> log)
+        private LeaderRay TryPlaceByGeometry(RadiusDimension rd, Action<string> log)
         {
             Tekla.Structures.Geometry3d.Point center;
             try
@@ -210,21 +259,27 @@ namespace RadiusDimensionMover
             catch (Exception ex)
             {
                 log("  Nie udało się policzyć środka łuku: " + ex.Message);
-                return false;
+                return null;
             }
 
             double radius = Distance2D(center, rd.ArcPoint2);
             if (radius < 1e-6)
             {
                 log("  Zdegenerowana geometria łuku (promień ~0).");
-                return false;
+                return null;
             }
+
+            // Kierunek "na zewnątrz": od środka okręgu przez łuk. Dla
+            // wypukłego zaokrąglenia narożnika środek leży po stronie
+            // materiału, więc ten kierunek wychodzi z części.
+            double dirX = (rd.ArcPoint2.X - center.X) / radius;
+            double dirY = (rd.ArcPoint2.Y - center.Y) / radius;
 
             var facts = GetPartFacts(rd, log);
             if (!facts.valid)
             {
                 log("  Nie udało się odczytać danych części z modelu.");
-                return false;
+                return null;
             }
 
             bool insideAllowed = facts.maxSizeMm > MinPartSizeForInsideMm && facts.holeCount == 0;
@@ -250,15 +305,160 @@ namespace RadiusDimensionMover
                 // Distance 25-120, a wstawienie 120 wyrzuciło tekst poza
                 // arkusz, podczas gdy ~15-25 ląduje tuż za opisem. Ponieważ
                 // RadiusDimension NIE udostępnia swojej pozycji przez API,
-                // nie ma czym tego przeliczyć bez patrzenia na ekran - a tego
-                // nie robimy. Rozmiar części z modelu jest stabilną i
-                // wystarczającą podstawą.
+                // nie ma czym tego przeliczyć. Rozmiar części z modelu jest
+                // stabilną i wystarczającą podstawą.
                 distance = OutwardSign * facts.maxSizeMm * OutsideFraction;
                 log("  -> tekst NA ZEWNĄTRZ (Distance=" + distance.ToString("0") + ").");
             }
 
-            SetFixedDistance(rd, activeDrawing, distance);
-            return true;
+            var attrs = rd.Attributes;
+            attrs.Placing = new DimensionSetBaseAttributes.DimensionPlacingAttributes(
+                DimensionSetBaseAttributes.Placings.Fixed,
+                new PlacingDirectionAttributes(true, true),
+                new PlacingDistanceAttributes(2.0, Math.Abs(distance)));
+            rd.Attributes = attrs;
+            rd.Distance = distance;
+            rd.Modify();
+
+            // Leader biegnie od łuku w stronę tekstu. Dokładnej długości nie
+            // znamy (API nie podaje pozycji tekstu), więc bierzemy z zapasem -
+            // chodzi tylko o to, żeby opisy nie leżały na tej linii.
+            double sign = insideAllowed ? -1.0 : 1.0;
+            return new LeaderRay
+            {
+                OriginX = center.X + dirX * radius * sign,
+                OriginY = center.Y + dirY * radius * sign,
+                DirX = dirX * sign,
+                DirY = dirY * sign,
+                Length = Math.Abs(distance) + facts.maxSizeMm * LeaderCheckLengthFactor
+            };
+        }
+
+        /// <summary>
+        /// DELIKATNIE odsuwa w bok te opisy (Mark), które leżą na linii
+        /// odniesienia któregoś wymiaru R - żeby nie zasłaniały wymiaru.
+        ///
+        /// Liczone analitycznie, jednym przejściem: rzut środka opisu na
+        /// półprostą leadera daje odległość wzdłuż linii i odchyłkę w bok.
+        /// Jeśli odchyłka jest mniejsza niż potrzebny prześwit (połowa
+        /// przekątnej opisu + margines), opis przesuwamy PROSTOPADLE do
+        /// leadera dokładnie o brakującą różnicę - ani o milimetr więcej.
+        /// Żadnego szukania po kroku, żadnych prób.
+        ///
+        /// Przesuwany opis musi mieć wyłączone automatyczne rozstawianie
+        /// (IsFixed=true), inaczej Tekla przy najbliższej okazji przeliczyłaby
+        /// jego pozycję i przesunięcie by zniknęło.
+        /// </summary>
+        private static void NudgeMarksOffLeaders(List<Mark> marks, List<LeaderRay> rays, Action<string> log)
+        {
+            if (rays.Count == 0)
+            {
+                return;
+            }
+
+            int moved = 0;
+
+            foreach (var mark in marks)
+            {
+                try
+                {
+                    var box = mark.GetAxisAlignedBoundingBox();
+                    double width = Math.Abs(box.MaxPoint.X - box.MinPoint.X);
+                    double height = Math.Abs(box.MaxPoint.Y - box.MinPoint.Y);
+                    if (width < 1e-6 && height < 1e-6)
+                    {
+                        // Opis bez geometrii (np. pusty) - nie ma co przesuwać.
+                        continue;
+                    }
+
+                    double cx = (box.MinPoint.X + box.MaxPoint.X) / 2.0;
+                    double cy = (box.MinPoint.Y + box.MaxPoint.Y) / 2.0;
+
+                    // Prześwit liczony z przekątnej, bo leader może biec pod
+                    // dowolnym kątem - wtedy "w poprzek" opisu jest właśnie
+                    // przekątna, nie sama wysokość.
+                    double needed = 0.5 * Math.Sqrt(width * width + height * height) + MarkClearanceMm;
+
+                    double bestPushX = 0, bestPushY = 0, worstDeficit = 0;
+
+                    foreach (var ray in rays)
+                    {
+                        double vx = cx - ray.OriginX;
+                        double vy = cy - ray.OriginY;
+
+                        double along = vx * ray.DirX + vy * ray.DirY;
+                        if (along < 0 || along > ray.Length)
+                        {
+                            // Opis jest za łukiem albo dalej niż leader -
+                            // nie koliduje.
+                            continue;
+                        }
+
+                        double latX = vx - ray.DirX * along;
+                        double latY = vy - ray.DirY * along;
+                        double lateral = Math.Sqrt(latX * latX + latY * latY);
+
+                        double deficit = needed - lateral;
+                        if (deficit <= 0)
+                        {
+                            continue;
+                        }
+
+                        // Kierunek odsunięcia: prostopadle do leadera, w tę
+                        // stronę, w której opis już jest. Gdy leży dokładnie
+                        // na linii, wybieramy dowolną prostopadłą.
+                        double pushX, pushY;
+                        if (lateral > 1e-6)
+                        {
+                            pushX = latX / lateral;
+                            pushY = latY / lateral;
+                        }
+                        else
+                        {
+                            pushX = -ray.DirY;
+                            pushY = ray.DirX;
+                        }
+
+                        if (deficit > worstDeficit)
+                        {
+                            worstDeficit = deficit;
+                            bestPushX = pushX * deficit;
+                            bestPushY = pushY * deficit;
+                        }
+                    }
+
+                    if (worstDeficit <= 0)
+                    {
+                        continue;
+                    }
+
+                    var attrs = mark.Attributes;
+                    attrs.PlacingAttributes = new PlacingAttributes(
+                        true,
+                        attrs.PlacingAttributes.PlacingDistance,
+                        attrs.PlacingAttributes.PlacingQuarter);
+                    mark.Attributes = attrs;
+
+                    var p = mark.InsertionPoint;
+                    mark.InsertionPoint = new Tekla.Structures.Geometry3d.Point(
+                        p.X + bestPushX, p.Y + bestPushY, p.Z);
+
+                    if (mark.Modify())
+                    {
+                        moved++;
+                        log("  Opis odsunięty o " + worstDeficit.ToString("0") + "mm w bok, żeby nie zasłaniał wymiaru R.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log("  Pominięto jeden opis przy odsuwaniu – błąd: " + ex.Message);
+                }
+            }
+
+            if (moved == 0)
+            {
+                log("  Żaden opis nie kolidował z wymiarami R.");
+            }
         }
 
         private static double Distance2D(Tekla.Structures.Geometry3d.Point a, Tekla.Structures.Geometry3d.Point b)
@@ -456,48 +656,32 @@ namespace RadiusDimensionMover
         /// wyszukiwania (PlacingDistanceAttributes) co RadiusDimension.
         /// </summary>
         private void TightenMarks(
-            List<Mark> marks, Drawing activeDrawing, Dictionary<ViewBase, double> scaleCache, Action<string> log)
+            List<Mark> marks, Dictionary<ViewBase, double> scaleCache, Action<string> log)
         {
+            int tightened = 0;
+
             foreach (var mark in marks)
             {
                 try
                 {
                     double scale = GetViewScale(mark, scaleCache, log);
 
-                    // Krok 1: reset "Fixed" z małą, neutralną odległością -
-                    // wymusza świeże przeliczenie przy przełączeniu na "auto"
-                    // (IsFixed=false), zamiast używać ewentualnego cache.
-                    var resetAttrs = mark.Attributes;
-                    resetAttrs.PlacingAttributes = new PlacingAttributes(
-                        true,
-                        new PlacingDistanceAttributes(2.0, ResetDistanceMm / scale),
-                        resetAttrs.PlacingAttributes.PlacingQuarter);
-                    mark.Attributes = resetAttrs;
-                    mark.Modify();
-                    activeDrawing.CommitChanges();
-                    Thread.Sleep(200);
-
-                    // Krok 2: "auto" (IsFixed=false) z ciasnym zakresem
-                    // wyszukiwania (mm na papierze -> jednostki modelu), żeby
-                    // opis został blisko, ale wciąż bez kolizji.
-                    var tightAttrs = mark.Attributes;
-                    tightAttrs.PlacingAttributes = new PlacingAttributes(
+                    // Tryb "auto" (IsFixed=false) z ciasnym zakresem
+                    // wyszukiwania, zamiast domyślnego "bez limitu", który
+                    // potrafił wyrzucić opis bardzo daleko od tego, co opisuje.
+                    var attrs = mark.Attributes;
+                    attrs.PlacingAttributes = new PlacingAttributes(
                         false,
-                        new PlacingDistanceAttributes(MarkSearchMarginMm / scale, MarkMinimalDistanceMm / scale, MarkMaximalDistanceMm / scale),
-                        tightAttrs.PlacingAttributes.PlacingQuarter);
-                    mark.Attributes = tightAttrs;
+                        new PlacingDistanceAttributes(
+                            MarkSearchMarginMm / scale,
+                            MarkMinimalDistanceMm / scale,
+                            MarkMaximalDistanceMm / scale),
+                        attrs.PlacingAttributes.PlacingQuarter);
+                    mark.Attributes = attrs;
 
-                    bool modifyResult = mark.Modify();
-                    activeDrawing.CommitChanges();
-                    Thread.Sleep(200);
-
-                    if (modifyResult)
+                    if (mark.Modify())
                     {
-                        log("  Opis dociągnięty bliżej (zakres " + MarkMinimalDistanceMm + "-" + MarkMaximalDistanceMm + "mm na papierze).");
-                    }
-                    else
-                    {
-                        log("  Jeden opis nie został zmodyfikowany (Modify() zwróciło false).");
+                        tightened++;
                     }
                 }
                 catch (Exception ex)
@@ -505,6 +689,9 @@ namespace RadiusDimensionMover
                     log("  Pominięto jeden opis – błąd: " + ex.Message);
                 }
             }
+
+            log("  Dociągnięto " + tightened + " opis(ów) bliżej elementu (zakres "
+                + MarkMinimalDistanceMm + "-" + MarkMaximalDistanceMm + "mm na papierze).");
         }
 
         /// <summary>

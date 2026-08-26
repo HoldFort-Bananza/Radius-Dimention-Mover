@@ -33,7 +33,19 @@ rysunku ani w inne teksty/wymiary.
    geometrii nie da się policzyć (np. zdegenerowany łuk) albo nie ma danych z
    modelu, wymiar spada do wbudowanego w Teklę trybu **`Placing=Free`** jako
    bezpiecznego wariantu awaryjnego.
-8. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
+8. **Odsuwa delikatnie te opisy (`Mark`), które leżą na linii odniesienia
+   wymiaru R** - żeby nie zasłaniały wymiaru. Rzut środka opisu na półprostą
+   leadera daje odległość wzdłuż linii i odchyłkę w bok; jeśli odchyłka jest
+   mniejsza niż potrzebny prześwit (połowa przekątnej opisu + 12mm), opis
+   przesuwa się PROSTOPADLE do leadera dokładnie o brakującą różnicę - ani o
+   milimetr więcej, więc zostaje przy swoim otworze. Przesunięty opis dostaje
+   `IsFixed=true`, inaczej Tekla przeliczyłaby jego pozycję z powrotem.
+9. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
+
+Wszystko liczone jest **analitycznie, jednym przejściem** - program nie próbuje
+kolejnych pozycji "aż się uda". Trzy etapy (dociągnięcie opisów → wymiary R →
+odsunięcie kolidujących opisów), każdy to jedno przejście po obiektach i jeden
+`CommitChanges()`. Efekt jest natychmiastowy.
 
 **Program działa wyłącznie na danych z Tekla Open API** - nie robi zrzutów
 ekranu, nie analizuje pikseli, nie czyta okna Tekli. Wszystkie decyzje
