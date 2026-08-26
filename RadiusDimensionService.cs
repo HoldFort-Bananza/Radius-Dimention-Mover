@@ -192,6 +192,31 @@ namespace RadiusDimensionMover
             TightenMarks(marks, scaleCache, log);
             activeDrawing.CommitChanges();
 
+            // Linie wymiarowe jako przeszkody. Zbierane TERAZ, przed
+            // rozstawianiem wymiarów R, bo są potrzebne w dwóch miejscach:
+            // (1) żeby nie wpuścić tekstu wymiaru R do środka części, jeśli
+            //     droga tam przecina inny wymiar,
+            // (2) żeby nie odsunąć opisu prosto na linię wymiarową.
+            // Linie wymiarów prostych nie zmieniają się przy rozstawianiu
+            // wymiarów R, więc jeden odczyt na starcie wystarcza.
+            var obstacles = new List<Segment>();
+            if (radiusDimensions.Count > 0)
+            {
+                try
+                {
+                    ViewBase view = radiusDimensions[0].GetView();
+                    if (view != null)
+                    {
+                        obstacles = CollectDimensionLines(view, log);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log("  [DIAG] Nie udało się zebrać linii wymiarowych: " + ex.Message);
+                }
+            }
+            log("  Wykryto " + obstacles.Count + " lini(i) wymiarowych jako przeszkody.");
+
             // Promienie linii odniesienia wymiarów R - potrzebne w ostatnim
             // etapie, żeby wiedzieć, czego opisy mają nie zasłaniać.
             var leaderRays = new List<LeaderRay>();
@@ -202,7 +227,7 @@ namespace RadiusDimensionMover
                 {
                     double scale = GetViewScale(rd, scaleCache, log);
 
-                    var ray = TryPlaceByGeometry(rd, log);
+                    var ray = TryPlaceByGeometry(rd, obstacles, log);
                     if (ray == null)
                     {
                         // Geometria się nie udała (np. zdegenerowany łuk) -
@@ -228,26 +253,6 @@ namespace RadiusDimensionMover
             }
 
             activeDrawing.CommitChanges();
-
-            // Przeszkody, na które nie wolno wepchnąć opisu - linie wymiarowe
-            // odczytane z widoku. Zbierane raz, przed odsuwaniem.
-            var obstacles = new List<Segment>();
-            if (radiusDimensions.Count > 0)
-            {
-                try
-                {
-                    ViewBase view = radiusDimensions[0].GetView();
-                    if (view != null)
-                    {
-                        obstacles = CollectDimensionLines(view, log);
-                        log("  Wykryto " + obstacles.Count + " lini(i) wymiarowych jako przeszkody.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    log("  [DIAG] Nie udało się zebrać linii wymiarowych: " + ex.Message);
-                }
-            }
 
             NudgeMarksOffLeaders(marks, leaderRays, obstacles, log);
             activeDrawing.CommitChanges();
@@ -294,7 +299,7 @@ namespace RadiusDimensionMover
         /// geometrii nie da się policzyć - wtedy wywołujący spada do
         /// PlaceUsingFreeMode.
         /// </summary>
-        private LeaderRay TryPlaceByGeometry(RadiusDimension rd, Action<string> log)
+        private LeaderRay TryPlaceByGeometry(RadiusDimension rd, List<Segment> obstacles, Action<string> log)
         {
             Tekla.Structures.Geometry3d.Point center;
             try
@@ -342,6 +347,33 @@ namespace RadiusDimensionMover
             log("  Część: płaszczyzna " + facts.FaceShortMm.ToString("0") + " x " + facts.FaceLongMm.ToString("0")
                 + "mm, śruby: " + facts.BoltCount + ", wycięcia: " + facts.BooleanCount
                 + ", promień łuku " + radius.ToString("0") + "mm.");
+
+            // Zanim wpuścimy tekst do środka: sprawdź, czy droga tam nie
+            // przecina INNEGO WYMIARU. Same warunki rozmiarowe tego nie
+            // wyłapują - na blachy 66 x 181 tekst "R 13.50" lądował dokładnie
+            // na wymiarze długości "181", bo linia odniesienia biegnie z
+            // narożnika na skos przez część i wychodzi jej dolną krawędzią.
+            //
+            // To sprawdzenie jest ważniejsze niż progi rozmiarowe: działa
+            // niezależnie od tego, jak ustawiony jest InsideMinShortFaceMm.
+            if (insideAllowed)
+            {
+                double insideProbe = facts.FaceShortMm * InsideFraction;
+                var insideRay = new LeaderRay
+                {
+                    OriginX = center.X - dirX * radius,
+                    OriginY = center.Y - dirY * radius,
+                    DirX = -dirX,
+                    DirY = -dirY,
+                    Length = insideProbe + facts.FaceLongMm * LeaderCheckLengthFactor
+                };
+
+                if (CrossesAnySegment(insideRay, obstacles))
+                {
+                    insideAllowed = false;
+                    log("  Droga do środka przecina inny wymiar - tekst idzie na zewnątrz.");
+                }
+            }
 
             double distance;
             if (insideAllowed)
@@ -647,6 +679,49 @@ namespace RadiusDimensionMover
             }
 
             return min;
+        }
+
+        /// <summary>
+        /// Czy półprosta leadera przecina którykolwiek z odcinków (linii
+        /// wymiarowych)? Używane, żeby nie wpuścić tekstu wymiaru R w miejsce,
+        /// do którego droga prowadzi przez inny wymiar.
+        /// </summary>
+        private static bool CrossesAnySegment(LeaderRay ray, List<Segment> segments)
+        {
+            double ex = ray.OriginX + ray.DirX * ray.Length;
+            double ey = ray.OriginY + ray.DirY * ray.Length;
+
+            foreach (var seg in segments)
+            {
+                if (SegmentsIntersect(
+                        ray.OriginX, ray.OriginY, ex, ey,
+                        seg.X1, seg.Y1, seg.X2, seg.Y2))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool SegmentsIntersect(
+            double ax, double ay, double bx, double by,
+            double cx, double cy, double dx, double dy)
+        {
+            double d1 = Cross(cx, cy, dx, dy, ax, ay);
+            double d2 = Cross(cx, cy, dx, dy, bx, by);
+            double d3 = Cross(ax, ay, bx, by, cx, cy);
+            double d4 = Cross(ax, ay, bx, by, dx, dy);
+
+            return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))
+                && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+        }
+
+        /// <summary>Iloczyn wektorowy (p2-p1) x (p-p1) - znak mówi, po której stronie prostej leży p.</summary>
+        private static double Cross(
+            double x1, double y1, double x2, double y2, double px, double py)
+        {
+            return (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
         }
 
         private static double PointSegmentDistance(
