@@ -21,45 +21,57 @@ rysunku ani w inne teksty/wymiary.
    narożnika środek leży po stronie materiału, więc kierunek "od środka na
    zewnątrz" = kierunek "od materiału") i sprawdza jednym zrzutem ekranu,
    czy znak `+`/`-` w Tekli zgadza się z tym kierunkiem.
-6. Następnie skanuje wzdłuż TEJ potwierdzonej strony cały zakres 60-150mm na
-   papierze (krok 15mm), sprawdzając na zrzucie ekranu, gdzie leżą już
-   istniejące linie/opisy wymiarowe, i **ustawia tekst 25mm za najdalszą z
-   nich** - tak, żeby wymiar R współgrał z łańcuchami wymiarowymi blachy i
-   rysunek został kompaktowy, zamiast wpadać w pierwszą wolną szczelinę tuż
-   przy części. Krawędź arkusza (pomarańczowa ramka) jest twardym limitem -
+6. **Decyduje, czy tekst może zostać WEWNĄTRZ części, czy musi iść NA
+   ZEWNĄTRZ** - na podstawie danych z modelu, nie analizy obrazu:
+   - część **większa niż 300mm i bez żadnego otworu** → tekst zostaje w
+     środku (jest tam pusto, rysunek jest najbardziej zwarty),
+   - część **z otworem albo mniejsza niż 300mm** → tekst idzie na zewnątrz,
+     w pobliże linii wymiarowych opisujących element.
+
+   Rozmiar bierze z bryły części (`Part.GetSolid()`), a otwory z
+   `GetBolts()` + `GetBooleans()` - droga: rysunkowy `Part.ModelIdentifier`
+   → `Model.SelectModelObject`.
+7. Jeśli tekst idzie na zewnątrz, odsuwa wymiar krok po kroku i po każdym
+   kroku **mierzy na zrzucie ekranu, jaka część nowo narysowanego wymiaru
+   nałożyła się na to, co już tam było** (piksel w piksel, bez zgadywania
+   pozycji tekstu - patrz `WindowCapture.GetOverlapWithExisting`). Wybiera
+   **najbliższą** pozycję, w której nic się nie nakłada, żeby rysunek został
+   zwarty. Krawędź arkusza (pomarańczowa ramka) jest twardym limitem -
    program nigdy nie wyjdzie poza nią. Jeśli z jakiegokolwiek powodu (np.
    zdegenerowana geometria, okno Tekli nie znalezione) nie da się tego
    ustalić, wymiar spada do wbudowanego w Teklę trybu **`Placing=Free`** jako
-   bezpiecznego wariantu awaryjnego (dobrze unika kolizji z innymi
-   elementami, ale sam z siebie potrafi wylądować wewnątrz konturu części -
-   stąd potrzeba głównej metody powyżej).
-7. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
+   bezpiecznego wariantu awaryjnego.
+8. Zapisuje zmiany (`Modify()` na każdym obiekcie + `CommitChanges()` na rysunku).
 
-Wcześniejsze podejścia okazały się zawodne albo kruche: `RadiusDimension` nie
-ma żadnego sposobu odczytania własnej POZYCJI na rysunku, a wbudowany w Teklę
-tryb `Placing=Free` (wybiera wolne miejsce, unikając kolizji z innymi
-tekstami/wymiarami) ma martwy punkt - kąt/stronę, po której ląduje, wybiera
-sam, "na sztywno" per wymiar, i żaden atrybut (`Direction`
-Positive/Negative) tego nie zmienia (sprawdzone empirycznie - 3 niezależne
-testy dały identyczny wynik), więc czasem ląduje w środku konturu części.
-Próba wykrycia konturu części piksel po pikselu (analiza "białych" pikseli na
-zrzucie ekranu) też zawiodła - linie i strzałki wymiarowe są rysowane tym
-samym kolorem co krawędzie części, więc nie da się ich odróżnić samą
-analizą koloru. Zadziałało dopiero policzenie kierunku wprost z geometrii
-łuku (`ArcPoint1/2/3`, dostępne przez API w tych samych jednostkach co
-`Distance`) połączone z jednym zrzutem ekranu tylko po to, żeby ustalić
-konwencję znaku Tekli - patrz `RadiusDimensionService.TryPlaceOutside`.
+Odległości szukania są **ułamkiem rzeczywistego rozmiaru części** (z bryły w
+modelu), a nie stałymi milimetrami - `Distance` i `ArcPoint1/2/3` są w
+jednostkach MODELU, więc stałe "mm" znaczyły zupełnie inną odległość na
+detalu 5:1 niż na blachy 1:5. Rozmiaru **nie** bierzemy z bounding boxa
+widoku: ten rośnie, gdy wymiary zostaną wyrzucone daleko, co tworzyło pętlę
+sprzężenia (każde kolejne uruchomienie liczyło coraz większe odległości - na
+blachy 175mm doszło do 2600mm).
+
+### Czego się nie da i dlaczego
+
+- **`Placing=Free`** (wbudowany silnik Tekli) unika kolizji, ale kąt/stronę
+  wybiera sam, "na sztywno" per wymiar, i żaden atrybut (`Direction`
+  Positive/Negative) tego nie zmienia - sprawdzone trzema niezależnymi
+  testami. Dlatego jest tylko wariantem awaryjnym.
+- **Wykrywanie konturu części po kolorze pikseli** zawiodło - linie i
+  strzałki wymiarowe są rysowane tym samym prawie-białym kolorem co krawędzie
+  części, więc wykryty "kontur" wychodził na niemal cały rysunek.
 
 ## Bezpieczniki
 
-- **Blokada po przesunięciu**: po udanym kliknięciu "Przesuń" przycisk się
-  blokuje, dopóki nie klikniesz "Cofnij" – chroni przed przypadkowym
-  wielokrotnym klikaniem (np. gdy Tekla na chwilę nie odpowiada).
-- **Wykrywanie ręcznej zmiany**: jeśli po przesunięciu ręcznie poprawisz
-  pozycję wymiaru w Tekli (albo otworzysz inny rysunek), program to zauważy
-  przy powrocie do okna (fokus okna) i sam odblokuje przycisk "Przesuń".
-- **Cofnij**: przywraca oryginalne `Attributes` (w tym tryb Placing) wymiarów
-  R i opisów sprzed ostatniego kliknięcia "Przesuń", krok po kroku.
+- **Przycisk jest zawsze klikalny** - bez żadnej blokady. Przesunięcie drugi
+  raz nic nie psuje (wymiary są po prostu rozstawiane od nowa), a wcześniejsza
+  blokada powodowała problem: Tekla nie zgłasza cofnięcia przez **Ctrl+Z**,
+  więc po Ctrl+Z przycisk zostawał szary i nie było jak przesunąć ponownie.
+- **Cofanie**: zwykłym **Ctrl+Z** w Tekli - program nie ma własnego "Cofnij".
+- **Podpis pod przyciskiem** pokazuje, jaki rysunek jest teraz otwarty -
+  aktualizowany ze zdarzeń Tekli (`Tekla.Structures.Drawing.UI.Events`:
+  `DrawingLoaded`, `DrawingEditorOpened`, `DrawingEditorClosed`), więc po
+  przejściu na inny rysunek od razu widać zmianę.
 - **Log sesji**: każda sesja programu zapisuje pełny log do pliku w
   `logs\session_<data_godzina>.log` obok pliku .exe.
 
@@ -92,8 +104,9 @@ biblioteki).
 3. Kliknij **"Przesuń wszystkie wymiary R (unikaj kolizji)"** - jeden
    przycisk, bez żadnych parametrów do wpisywania.
 4. Log w oknie pokaże ile wymiarów znaleziono i ile udało się rozstawić.
-5. Wróć do Tekli i sprawdź wzrokowo. Jeśli coś jest nie tak, kliknij
-   "Cofnij", żeby wrócić do stanu sprzed operacji.
+5. Wróć do Tekli i sprawdź wzrokowo. Jeśli coś jest nie tak, wciśnij
+   **Ctrl+Z** w Tekli.
+6. Przejdź na kolejny rysunek - przycisk sam się odblokuje.
 
 ## Budowanie z kodu źródłowego (dla programistów)
 

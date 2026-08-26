@@ -2,20 +2,41 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
+using Tekla.Structures.Drawing;
 
 namespace RadiusDimensionMover
 {
     public class MainForm : Form
     {
-        // WAŻNE: jeden trwały obiekt serwisu przez cały czas życia okna,
-        // żeby historia do "Cofnij" przetrwała między kliknięciami przycisków.
         private readonly RadiusDimensionService _service = new RadiusDimensionService();
 
-        // Blokada przycisku "Przesuń" po udanym przesunięciu - dopóki nie
-        // klikniesz "Cofnij", kolejne kliknięcia "Przesuń" nic nie robią.
-        // Chroni to przed sytuacją, gdy Tekla "zawiesza się" na chwilę,
-        // użytkownik klika kilka razy myśląc że nic się nie stało.
-        private bool _canRun = true;
+        // Przycisk "Przesuń" jest ZAWSZE klikalny - żadnej blokady. Wcześniej
+        // blokował się po przesunięciu i odblokowywał tylko, gdy program sam
+        // wykrył zmianę, ale Tekla nie zgłasza cofnięcia przez Ctrl+Z, więc po
+        // Ctrl+Z przycisk zostawał szary i nie było jak przesunąć ponownie.
+        // Przesunięcie drugi raz nic nie psuje (wymiar po prostu zostaje
+        // rozstawiony od nowa), więc blokada przynosiła więcej szkody niż
+        // pożytku.
+
+        // Ustawiane na czas trwania przesuwania - tylko po to, żeby nie
+        // wystartować drugiej operacji w trakcie pierwszej.
+        private bool _busy;
+
+        // Wykrywanie zmiany kontekstu w Tekli ZDARZENIAMI, nie pingowaniem -
+        // tak samo jak w HFT_Organizer_Mostowy (UI/MainForm.cs,
+        // RegisterTeklaEvents): Tekla.Structures.Drawing.UI.Events daje
+        // DrawingLoaded (wejście na inny rysunek), DrawingEditorOpened/Closed
+        // (wejście/wyjście z edytora rysunków), a Model.Events dodatkowo
+        // TeklaStructuresExit. Dzięki temu przycisk reaguje od razu, bez
+        // odpytywania Tekli w kółko.
+        private Tekla.Structures.Drawing.UI.Events _drawingEvents;
+        private Tekla.Structures.Model.Events _modelEvents;
+
+        // Timer działa TYLKO dopóki nie ma połączenia z Teklą (wtedy nie ma
+        // do czego przyczepić zdarzeń) - po połączeniu jest zatrzymywany, żeby
+        // nie pingować Tekli bez potrzeby.
+        private Timer _connectRetryTimer;
+        private const int ConnectRetryIntervalMs = 3000;
 
         // Ścieżka do pliku logu tej sesji - zapisywana automatycznie, żeby
         // nie trzeba było ręcznie kopiować zawartości okna logu przy
@@ -37,9 +58,9 @@ namespace RadiusDimensionMover
             Height = 460;
             StartPosition = FormStartPosition.CenterScreen;
 
-            // --- Wiersz 1: Przesuń - jeden przycisk, bez żadnych parametrów.
-            // Tekla sama szuka wolnego miejsca (Placing=Free, patrz
-            // RadiusDimensionService.AutoPlaceWithCollisionAvoidance). ---
+            // Jeden przycisk, bez żadnych parametrów. Cofania nie ma - w Tekli
+            // działa zwykłe Ctrl+Z, więc program tylko pilnuje, żeby nie
+            // przesunąć dwa razy pod rząd tego samego rysunku.
             _runButton = new Button
             {
                 Text = "Przesuń wszystkie wymiary R (unikaj kolizji)",
@@ -50,21 +71,10 @@ namespace RadiusDimensionMover
             };
             _runButton.Click += RunButton_Click;
 
-            // --- Wiersz 2: Cofnij ---
-            _undoButton = new Button
-            {
-                Text = "Cofnij",
-                Left = 15,
-                Top = 62,
-                Width = 470,
-                Height = 32
-            };
-            _undoButton.Click += UndoButton_Click;
-
             _statusLabel = new Label
             {
                 Left = 15,
-                Top = 102,
+                Top = 64,
                 Width = 470,
                 Height = 20,
                 ForeColor = Color.DarkSlateGray
@@ -73,9 +83,9 @@ namespace RadiusDimensionMover
             _logBox = new TextBox
             {
                 Left = 15,
-                Top = 127,
+                Top = 89,
                 Width = 470,
-                Height = 260,
+                Height = 298,
                 Multiline = true,
                 ScrollBars = ScrollBars.Vertical,
                 ReadOnly = true,
@@ -83,71 +93,183 @@ namespace RadiusDimensionMover
             };
 
             Controls.Add(_runButton);
-            Controls.Add(_undoButton);
             Controls.Add(_statusLabel);
             Controls.Add(_logBox);
 
-            // Naturalny moment, żeby sprawdzić, czy ktoś ręcznie poprawił
-            // wymiar w Tekli albo otworzył inny rysunek: użytkownik musi
-            // kliknąć z powrotem na to okno, żeby móc znów użyć "Przesuń" -
-            // to właśnie odpala Activated.
-            Activated += MainForm_Activated;
+            // Fokus okna to dodatkowy, tani moment na odświeżenie - łapie też
+            // zmiany, których zdarzenia Tekli nie zgłaszają (np. ręczne
+            // przeciągnięcie wymiaru na rysunku).
+            Activated += (s, e) => RefreshState();
+
+            _connectRetryTimer = new Timer { Interval = ConnectRetryIntervalMs };
+            _connectRetryTimer.Tick += (s, e) => TryConnectAndWatch();
+
+            FormClosing += (s, e) =>
+            {
+                try { _connectRetryTimer?.Stop(); } catch { }
+                UnregisterTeklaEvents();
+            };
 
             Log($"===== Start sesji {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====");
             Log(_logFilePath != null
                 ? "Log tej sesji zapisywany do pliku: " + _logFilePath
                 : "UWAGA: nie udało się utworzyć pliku logu - log dostępny tylko w tym oknie.");
+
+            TryConnectAndWatch();
         }
 
-        private void MainForm_Activated(object sender, EventArgs e)
+        /// <summary>
+        /// Podłącza się do zdarzeń Tekli, jeśli tylko jest połączenie. Dopóki
+        /// Tekli nie ma (albo się zamknęła), chodzi timer ponawiający próbę -
+        /// po udanej rejestracji timer jest zatrzymywany, żeby nie pingować
+        /// Tekli bez potrzeby (ten sam wzorzec co w HFT_Organizer_Mostowy).
+        /// </summary>
+        private void TryConnectAndWatch()
         {
-            if (_canRun)
+            bool connected;
+            try
             {
-                // Już odblokowane - nie ma sensu odpytywać Tekli.
+                connected = new DrawingHandler().GetConnectionStatus();
+            }
+            catch
+            {
+                connected = false;
+            }
+
+            if (connected)
+            {
+                if (_drawingEvents == null)
+                {
+                    RegisterTeklaEvents();
+                }
+                _connectRetryTimer?.Stop();
+            }
+            else
+            {
+                // Rejestracje wskazywałyby na nieistniejący już proces Tekli -
+                // trzeba je porzucić, inaczej po ponownym starcie Tekli
+                // program nigdy nie dostanie już żadnego zdarzenia.
+                UnregisterTeklaEvents();
+                if (_connectRetryTimer != null && !_connectRetryTimer.Enabled)
+                {
+                    _connectRetryTimer.Start();
+                }
+            }
+
+            RefreshState();
+        }
+
+        private void RegisterTeklaEvents()
+        {
+            try
+            {
+                _drawingEvents = new Tekla.Structures.Drawing.UI.Events();
+                _drawingEvents.DrawingLoaded += OnTeklaContextChanged;
+                _drawingEvents.DrawingEditorOpened += OnTeklaContextChanged;
+                _drawingEvents.DrawingEditorClosed += OnTeklaContextChanged;
+                _drawingEvents.Register();
+
+                _modelEvents = new Tekla.Structures.Model.Events();
+                _modelEvents.TeklaStructuresExit += OnTeklaExited;
+                _modelEvents.Register();
+
+                Log("Wykrywanie zmiany rysunku: zdarzeniowe (DrawingLoaded / DrawingEditorOpened / DrawingEditorClosed).");
+            }
+            catch (Exception ex)
+            {
+                // Bez zdarzeń program nadal działa - po prostu stan odświeży
+                // się przy powrocie fokusu na okno.
+                Log("UWAGA: zdarzenia Tekli niedostępne (" + ex.Message
+                    + ") - stan przycisków odświeży się przy kliknięciu w to okno.");
+                _drawingEvents = null;
+                _modelEvents = null;
+            }
+        }
+
+        private void UnregisterTeklaEvents()
+        {
+            try { if (_drawingEvents != null) { _drawingEvents.UnRegister(); } } catch { }
+            try { if (_modelEvents != null) { _modelEvents.UnRegister(); } } catch { }
+            _drawingEvents = null;
+            _modelEvents = null;
+        }
+
+        // Zdarzenia Tekli przychodzą z jej wątku - do UI musimy wrócić przez
+        // Invoke, inaczej ruszanie przyciskami rzuci wyjątkiem.
+        private void OnTeklaContextChanged() => UiInvoke(RefreshState);
+
+        private void OnTeklaExited() => UiInvoke(() =>
+        {
+            UnregisterTeklaEvents();
+            RefreshState();
+            _connectRetryTimer?.Start();
+        });
+
+        private void UiInvoke(Action action)
+        {
+            try
+            {
+                if (IsDisposed || Disposing)
+                {
+                    return;
+                }
+
+                if (InvokeRequired)
+                {
+                    BeginInvoke(action);
+                }
+                else
+                {
+                    action();
+                }
+            }
+            catch
+            {
+                // Okno mogło właśnie zniknąć - nic tu nie poradzimy i nie ma
+                // sensu przerywać z tego powodu działania programu.
+            }
+        }
+
+        /// <summary>
+        /// Odświeża tylko PODPIS pod przyciskiem (jaki rysunek jest teraz
+        /// otwarty). Sam przycisk pozostaje zawsze klikalny. Wołane ze zdarzeń
+        /// Tekli - musi być tanie i nigdy nie może rzucić wyjątkiem w górę.
+        /// </summary>
+        private void RefreshState()
+        {
+            if (_busy)
+            {
                 return;
             }
 
             try
             {
-                if (_service.HasAnyDimensionChangedSinceLastMove())
-                {
-                    _canRun = true;
-                    _runButton.Enabled = true;
-                    _statusLabel.Text = "Wykryto zmianę rysunku lub ręczną zmianę wymiaru – przycisk Przesuń odblokowany.";
-                }
+                _statusLabel.Text = _service.GetCurrentDrawingDescription();
             }
-            catch
+            catch (Exception ex)
             {
-                // Ciche pominięcie - nie chcemy wyskakujących błędów przy
-                // zwykłym przełączeniu się z powrotem na to okno.
+                // Nie da się odczytać stanu (np. Tekla właśnie się zamyka) -
+                // to tylko podpis, nie ma sensu robić z tego błędu.
+                _statusLabel.Text = "Brak kontaktu z Teklą (" + ex.GetType().Name + ").";
             }
         }
 
         private void RunButton_Click(object sender, EventArgs e)
         {
-            if (!_canRun)
+            if (_busy)
             {
-                // Zabezpieczenie na wypadek, gdyby kliknięcie mimo wszystko
-                // dotarło (np. kolejka komunikatów) mimo że przycisk powinien
-                // być zablokowany - nic nie rób, nie przesuwaj drugi raz.
                 return;
             }
 
             _logBox.Clear();
             Log($"===== {DateTime.Now:HH:mm:ss} PRZESUŃ (auto, unikanie kolizji) =====");
-            SetButtonsEnabled(false);
+            _busy = true;
+            _runButton.Enabled = false;
             _statusLabel.Text = "Przetwarzanie (może chwilę potrwać - Tekla liczy rozstawienie)...";
 
             try
             {
                 var result = _service.AutoPlaceWithCollisionAvoidance(Log);
-
-                // Po udanym przesunięciu blokujemy "Przesuń", żeby kolejne
-                // kliknięcia (np. z niecierpliwości) nie powtarzały operacji
-                // niepotrzebnie. Żeby przesunąć dalej, trzeba świadomie
-                // kliknąć "Cofnij" i spróbować ponownie.
-                _canRun = false;
-
                 _statusLabel.Text = $"Gotowe. Rozstawiono {result.MovedCount} z {result.TotalCount} wymiarów R. Sprawdź wizualnie w Tekli.";
             }
             catch (Exception ex)
@@ -158,54 +280,9 @@ namespace RadiusDimensionMover
             }
             finally
             {
-                SetButtonsEnabled(true);
+                _busy = false;
+                _runButton.Enabled = true;
             }
-        }
-
-        private void UndoButton_Click(object sender, EventArgs e)
-        {
-            _logBox.Clear();
-            Log($"===== {DateTime.Now:HH:mm:ss} COFNIJ =====");
-            SetButtonsEnabled(false);
-            _statusLabel.Text = "Cofanie...";
-
-            try
-            {
-                var result = _service.UndoLastMove(Log);
-
-                if (result.TotalCount == 0)
-                {
-                    _statusLabel.Text = "Brak historii do cofnięcia.";
-                }
-                else
-                {
-                    _statusLabel.Text = $"Cofnięto {result.MovedCount} z {result.TotalCount} wymiarów R.";
-                }
-
-                // Cofnięcie (nawet gdy nie było czego cofać) odblokowuje
-                // "Przesuń" - wracamy do stanu, w którym jedno kliknięcie
-                // = jedno przesunięcie.
-                _canRun = true;
-            }
-            catch (Exception ex)
-            {
-                _statusLabel.Text = "Błąd – zobacz log.";
-                Log("BŁĄD: " + ex.Message);
-                Log(ex.StackTrace);
-            }
-            finally
-            {
-                SetButtonsEnabled(true);
-            }
-        }
-
-        private void SetButtonsEnabled(bool enabled)
-        {
-            // "Przesuń" wraca do stanu aktywnego tylko jeśli nie jest
-            // zablokowany przez _canRun (czyli dopóki nie kliknięto "Cofnij"
-            // po ostatnim udanym przesunięciu).
-            _runButton.Enabled = enabled && _canRun;
-            _undoButton.Enabled = enabled;
         }
 
         /// <summary>

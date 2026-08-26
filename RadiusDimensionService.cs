@@ -13,39 +13,8 @@ namespace RadiusDimensionMover
 
     public class RadiusDimensionService
     {
-        // Stos kolejnych "przesunięć" - każde kliknięcie "Przesuń" dokłada na
-        // wierzch jeden zestaw (wymiar R -> pełne Attributes + Distance
-        // SPRZED tego kliknięcia). Każde kliknięcie "Cofnij" zdejmuje jeden
-        // zestaw ze stosu i przywraca te wartości, więc klikając "Cofnij"
-        // wielokrotnie, wracasz krok po kroku aż do stanu sprzed pierwszego
-        // "Przesuń" (oryginału). Przywracamy CAŁE Attributes (nie tylko
-        // Distance), bo tryb Free/Fixed to część Attributes.Placing.
-        private readonly Stack<List<(RadiusDimension dim, RadiusDimensionAttributes previousAttributes, double previousDistance)>> _undoStack
-            = new Stack<List<(RadiusDimension, RadiusDimensionAttributes, double)>>();
-
-        // Analogiczny stos dla opisów (Mark, np. "1*Ø13") przesuwanych bliżej
-        // razem z wymiarami R w tym samym kliknięciu "Przesuń" - zdejmowany
-        // z "Cofnij" w parze z powyższym stosem.
-        private readonly Stack<List<(Mark mark, Mark.MarkAttributes previousAttributes)>> _markUndoStack
-            = new Stack<List<(Mark, Mark.MarkAttributes)>>();
-
-        // Wartości Distance ustawione przez OSTATNIE udane "Przesuń" - używane
-        // do wykrycia, czy użytkownik ręcznie przesunął któryś wymiar R na
-        // rysunku (np. przeciągając go w Tekli) od tego momentu. Jeśli tak,
-        // UI może z powrotem odblokować przycisk "Przesuń".
-        private List<(RadiusDimension dim, double appliedDistance)> _lastAppliedMove
-            = new List<(RadiusDimension, double)>();
-
-        // Nazwa rysunku, na którym wykonano ostatnie udane "Przesuń" - jeśli
-        // aktywny rysunek w Tekli się zmieni (np. otworzysz inny rysunek),
-        // blokada przycisku "Przesuń" powinna zniknąć, bo "Cofnij" i tak nie
-        // miałoby czego cofać na nowym rysunku.
-        private string _lastMoveDrawingName;
-
-        // --- Parametry wyszukiwania wolnego miejsca (mm NA PAPIERZE,
-        // przeliczane przez skalę widoku na jednostki modelu przed wysłaniem
-        // do API - PlacingDistanceAttributes jest w tych samych jednostkach
-        // co Distance, czyli w jednostkach modelu, nie papieru). ---
+        // --- Parametry wyszukiwania wolnego miejsca dla trybu AWARYJNEGO
+        // (Placing=Free) - w jednostkach MODELU, tak jak Distance. ---
         private const double SearchMarginMm = 30.0;
         private const double MinimalDistanceMm = 15.0;
         private const double MaximalDistanceMm = 300.0;
@@ -55,40 +24,54 @@ namespace RadiusDimensionMover
         // komentarz w PlaceUsingFreeMode).
         private const double ResetDistanceMm = 4.0;
 
-        // --- Parametry podejścia "wizualnego" (WindowCapture) używanego do
-        // WYMUSZENIA, żeby wymiar R zawsze lądował NA ZEWNĄTRZ konturu
-        // części, a nie w środku - patrz dokumentacja TryPlaceOutside(). ---
+        // --- Parametry podejścia "wizualnego" (WindowCapture) - patrz
+        // dokumentacja TryPlaceSmart().
+        //
+        // WAŻNE - jednostki: RadiusDimension.Distance oraz ArcPoint1/2/3 są w
+        // jednostkach MODELU, natomiast ViewBase.GetAxisAlignedBoundingBox()
+        // zwraca wymiary NA PAPIERZE (potwierdzone empirycznie: blacha 538mm
+        // w modelu, bbox szerokości 148mm przy skali 1:5). Dlatego wszystkie
+        // odległości szukania wyrażamy jako UŁAMEK rozmiaru części w modelu
+        // (bbox * skala), a nie jako stałe milimetry - inaczej te same
+        // wartości oznaczają zupełnie inną odległość na rysunku detalu 5:1
+        // niż na blachy 1:5 (na tym się właśnie wcześniej wywróciło:
+        // "60mm" wychodziło realnie 12mm w modelu, czyli wciąż na krawędzi
+        // blachy 538x141). ---
 
-        // Odległość próbna (na papierze) używana do sprawdzenia, w którą
-        // stronę (+/-) faktycznie wypada tekst wymiaru - musi być
-        // wystarczająco duża, żeby jednoznacznie "wyjść" poza mały kontur,
-        // ale nie tak duża, żeby wylecieć poza okno/arkusz.
-        private const double ProbeDistanceMm = 70.0;
+        // Ułamek rozmiaru części użyty jako odległość próbna do ustalenia,
+        // w którą stronę (+/-) faktycznie wypada tekst wymiaru.
+        private const double ProbeFraction = 0.25;
+        private const double AnchorProbeFraction = 0.02;
 
-        // Malutkie "szturchnięcie" (Fixed, Distance dodatnie) używane
-        // TYLKO po to, żeby wizualnie zlokalizować (przez różnicę zrzutów)
-        // MIEJSCE na ekranie, w którym leży dany wymiar/narożnik - bo samo
-        // RadiusDimension nie ma żadnej metody odczytu swojej pozycji.
-        private const double AnchorProbeDistanceMm = 6.0;
+        // --- Kiedy tekst wymiaru może zostać WEWNĄTRZ części ---
+        // Zasada ustalona z użytkownikiem: w środku wolno zostawić tekst tylko
+        // gdy część jest większa niż ten próg I NIE MA w sobie żadnego otworu
+        // (wtedy w środku jest pusto). Mniejsza część albo obecność otworu =
+        // tekst na zewnątrz, przy liniach wymiarowych.
+        private const double MinPartSizeForInsideMm = 300.0;
 
-        // Zakres i krok wyszukiwania finalnej, wolnej od kolizji odległości
-        // wzdłuż JUŻ WYBRANEJ (wizualnie potwierdzonej) strony.
-        private const double FinalMinDistanceMm = 60.0;
-        private const double FinalMaxDistanceMm = 150.0;
-        private const double FinalStepMm = 15.0;
+        // Jak głęboko w część wchodzi tekst, gdy wolno mu tam zostać -
+        // ułamek rozmiaru odniesienia.
+        private const double InsideFraction = 0.10;
 
-        // Stały, uniwersalny odstęp ZA najdalej wykrytą linią/opisem
-        // wymiarowym (zamiast "pierwszy wolny krok skanu", co zależało od
-        // FinalStepMm) - żeby wynik był przewidywalny niezależnie od
-        // konkretnego układu rysunku.
-        private const double ClearanceBeyondLastLineMm = 25.0;
+        // Maksymalny dopuszczalny ułamek nowo narysowanego wymiaru, który
+        // wolno nałożyć na już istniejącą treść (patrz
+        // WindowCapture.GetOverlapWithExisting). Próg jest luźny, bo leader
+        // wychodzący z części z natury przecina stos linii wymiarowych i to
+        // jest w porządku - chodzi o to, żeby sam TEKST nie wpadł w inny
+        // tekst ani w otwór.
+        private const double OutsideMaxOverlap = 0.015;
 
-        // Rozmiar (px) kwadratu sprawdzanego pod kątem zajętości wokół
-        // kandydującej pozycji tekstu oraz próg "to już realna treść (linia/
-        // opis wymiarowy), nie szum tła" przy wyszukiwaniu najdalszej
-        // zajętej pozycji.
+        // --- Wyszukiwanie miejsca NA ZEWNĄTRZ: szukamy NAJBLIŻSZEJ pozycji,
+        // w której wymiar nie nakłada się na istniejącą treść. Krok jest
+        // drobny, żeby nie przeskoczyć dobrego miejsca i nie wyrzucić wymiaru
+        // dalej, niż potrzeba. ---
+        private const double OutsideMinFraction = 0.06;
+        private const double OutsideMaxFraction = 0.55;
+        private const int OutsideSteps = 16;
+
+        // Rozmiar (px) kwadratu sprawdzanego przy wykrywaniu krawędzi arkusza.
         private const int OccupancyBoxSizePx = 36;
-        private const double ContentPresentOccupancyThreshold = 0.05;
 
         // Minimalna liczba różniących się pikseli, żeby uznać zrzut "przed"
         // i "po" za realną, wiarygodną zmianę (a nie szum/nic się nie stało).
@@ -138,8 +121,6 @@ namespace RadiusDimensionMover
         /// </summary>
         public MoveResult AutoPlaceWithCollisionAvoidance(Action<string> log)
         {
-            var thisMoveHistory = new List<(RadiusDimension, RadiusDimensionAttributes, double)>();
-            var appliedNow = new List<(RadiusDimension, double)>();
             var result = new MoveResult();
 
             var drawingHandler = new DrawingHandler();
@@ -188,11 +169,10 @@ namespace RadiusDimensionMover
             // Najpierw dociągamy opisy (np. "1*Ø13") bliżej - zanim wymiary R
             // szukają wolnego miejsca, żeby nie musiały omijać opisów
             // wyrzuconych daleko poza to, co realnie opisują.
-            var markMoveHistory = TightenMarks(marks, activeDrawing, scaleCache, log);
-            _markUndoStack.Push(markMoveHistory);
+            TightenMarks(marks, activeDrawing, scaleCache, log);
 
             // --- Przygotowanie "wizyjnego" wymuszania strony (poza kontur
-            // części, nigdy do środka) - patrz TryPlaceOutside(). Jeśli
+            // części, nigdy do środka) - patrz TryPlaceSmart(). Jeśli
             // cokolwiek się nie uda (okno Tekli nie znalezione, kontur nie
             // wykryty), po prostu NIE używamy tej ścieżki i każdy wymiar R
             // spada do starego, sprawdzonego trybu Free - program ma zawsze
@@ -226,14 +206,12 @@ namespace RadiusDimensionMover
                 {
                     try
                     {
-                        RadiusDimensionAttributes originalAttrs = rd.Attributes;
-                        double originalDistance = rd.Distance;
                         double scale = GetViewScale(rd, scaleCache, log);
 
                         bool placed = false;
                         if (visionAvailable)
                         {
-                            placed = TryPlaceOutside(rd, activeDrawing, scale, teklaHwnd, ref reference, log);
+                            placed = TryPlaceSmart(rd, activeDrawing, scale, teklaHwnd, ref reference, log);
                         }
 
                         if (!placed)
@@ -260,8 +238,6 @@ namespace RadiusDimensionMover
                         if (placed)
                         {
                             result.MovedCount++;
-                            thisMoveHistory.Add((rd, originalAttrs, originalDistance));
-                            appliedNow.Add((rd, rd.Distance));
                         }
                         else
                         {
@@ -279,24 +255,22 @@ namespace RadiusDimensionMover
                 reference?.Dispose();
             }
 
-            _undoStack.Push(thisMoveHistory);
-            _lastAppliedMove = appliedNow;
-            if (radiusDimensions.Count > 0)
-            {
-                _lastMoveDrawingName = activeDrawing.Name;
-            }
 
             return result;
         }
 
         /// <summary>
-        /// Wymusza, żeby wymiar R wylądował NA ZEWNĄTRZ konturu części, a
-        /// nie w środku - odpowiedź na to, że tryb Placing=Free (patrz
-        /// PlaceUsingFreeMode) wybiera kąt/stronę wg czegoś ustalonego "na
-        /// sztywno" per wymiar, czego NIE da się zmienić żadnym atrybutem
-        /// API (sprawdzone empirycznie: PlacingDirectionAttributes.
-        /// Positive/Negative nie ma żadnego wpływu na wybraną stronę - trzy
-        /// niezależne testy dały identyczny wynik).
+        /// Umieszcza wymiar R w rozsądnym miejscu: NAJPIERW próbuje WEWNĄTRZ
+        /// części (jeśli jest tam wolne miejsce - wtedy rysunek jest
+        /// najbardziej zwarty), a dopiero gdy w środku jest ciasno, wypycha
+        /// go NA ZEWNĄTRZ, za skrajną linię wymiarową.
+        ///
+        /// Potrzebne, bo tryb Placing=Free (patrz PlaceUsingFreeMode) wybiera
+        /// kąt/stronę wg czegoś ustalonego "na sztywno" per wymiar, czego NIE
+        /// da się zmienić żadnym atrybutem API (sprawdzone empirycznie:
+        /// PlacingDirectionAttributes.Positive/Negative nie ma żadnego
+        /// wpływu na wybraną stronę - trzy niezależne testy dały identyczny
+        /// wynik).
         ///
         /// PIERWSZE podejście (wykrywanie "białego konturu" na zrzucie
         /// ekranu, globalnie i lokalnie) ZAWIODŁO - linie/strzałki wymiarowe
@@ -316,20 +290,20 @@ namespace RadiusDimensionMover
         /// dźwignia w tym całym probemie.
         ///
         /// Wizja (zrzut ekranu, odporny na zasłonięcia - WindowCapture) jest
-        /// używana tylko w DWÓCH miejscach: (1) JEDNORAZOWO na wymiar, żeby
-        /// sprawdzić, czy Tekla przyjęła znak "+" Distance jako ruch w
-        /// policzonym kierunku "na zewnątrz", czy przeciwnie (Tekla może
-        /// stosować dowolną wewnętrzną konwencję, której nie da się
-        /// odgadnąć bez jednego rzeczywistego pomiaru), (2) do finalnego
-        /// wyszukania wolnego (nienachodzącego na inne elementy) miejsca
-        /// wzdłuż TEJ potwierdzonej strony.
+        /// używana tylko do: (1) JEDNORAZOWEGO sprawdzenia na wymiar, czy
+        /// Tekla przyjęła znak "+" Distance jako ruch w policzonym kierunku
+        /// "na zewnątrz", czy przeciwnie (Tekla może stosować dowolną
+        /// wewnętrzną konwencję, której nie da się odgadnąć bez jednego
+        /// rzeczywistego pomiaru), (2) sprawdzenia, czy w środku części jest
+        /// wolne miejsce, (3) wyszukania miejsca za skrajną linią wymiarową,
+        /// jeśli w środku jest ciasno.
         ///
         /// Zwraca false (bez wyjątku), jeśli z jakiegokolwiek powodu nie da
         /// się tego wiarygodnie ustalić (np. zdegenerowana geometria łuku,
         /// brak zauważalnej zmiany na zrzutach) - wywołujący ma wtedy spaść
         /// do PlaceUsingFreeMode jako bezpiecznego wariantu awaryjnego.
         /// </summary>
-        private bool TryPlaceOutside(
+        private bool TryPlaceSmart(
             RadiusDimension rd, Drawing activeDrawing, double scale, IntPtr teklaHwnd,
             ref System.Drawing.Bitmap reference, Action<string> log)
         {
@@ -365,14 +339,35 @@ namespace RadiusDimensionMover
                 double expectedPixelDx = outVx;
                 double expectedPixelDy = -outVy;
 
+                // Fakty o części z MODELU: rozmiar i liczba otworów. Rozmiar
+                // części jest też rozmiarem odniesienia dla wszystkich
+                // odległości szukania.
+                //
+                // WAŻNE: kiedyś rozmiar odniesienia brał się z bounding boxa
+                // WIDOKU - to był błąd z pętlą sprzężenia: bbox widoku rośnie,
+                // gdy wymiary zostaną wyrzucone daleko, więc każde kolejne
+                // uruchomienie liczyło coraz większe odległości (na blachy
+                // 175mm doszło do 2600!). Rozmiar bryły z modelu jest stały i
+                // niezależny od tego, gdzie aktualnie leżą wymiary.
+                var facts = GetPartFacts(rd, log);
+
+                double referenceSize = facts.valid
+                    ? facts.maxSizeMm
+                    : GetModelReferenceSize(rd, scale, log);
+                if (referenceSize <= 0)
+                {
+                    log("  [WIZJA] Nie udało się ustalić rozmiaru części - pomijam wizualne umieszczanie.");
+                    return false;
+                }
+
                 // Jedna próbna zmiana w stronę "+", żeby sprawdzić, czy
                 // zgadza się z policzonym kierunkiem "na zewnątrz".
-                var anchorProbe = ProbeSign(rd, activeDrawing, scale, +1, AnchorProbeDistanceMm, teklaHwnd, beforeShot);
-                var posProbe = ProbeSign(rd, activeDrawing, scale, +1, ProbeDistanceMm, teklaHwnd, beforeShot);
+                var anchorProbe = ProbeSign(rd, activeDrawing, +1, referenceSize * AnchorProbeFraction, teklaHwnd, beforeShot);
+                var posProbe = ProbeSign(rd, activeDrawing, +1, referenceSize * ProbeFraction, teklaHwnd, beforeShot);
 
                 if (!anchorProbe.valid || !posProbe.valid)
                 {
-                    log("  [WIZJA] Brak wykrywalnej zmiany na zrzutach ekranu - pomijam wizualne wymuszanie strony.");
+                    log("  [WIZJA] Brak wykrywalnej zmiany na zrzutach ekranu - pomijam wizualne umieszczanie.");
                     return false;
                 }
 
@@ -381,71 +376,107 @@ namespace RadiusDimensionMover
                 double dot = observedDx * expectedPixelDx + observedDy * expectedPixelDy;
                 int sign = dot >= 0 ? +1 : -1;
 
-                log("  [WIZJA] Kierunek na zewnątrz policzony ze środka łuku (ArcPoint1/2/3) - potwierdzona strona: " + (sign > 0 ? "+" : "-") + ".");
+                log("  [WIZJA] Rozmiar odniesienia " + referenceSize.ToString("0") + "mm, strona na zewnątrz: " + (sign > 0 ? "+" : "-") + ".");
 
-                // Skanujemy CAŁY zakres (zamiast zatrzymać się na pierwszym
-                // wolnym miejscu) i lądujemy TUŻ ZA najdalszą wykrytą
-                // "zajętością" (czyli na wysokości najdalszej istniejącej
-                // linii/opisu wymiarowego w tym kierunku) - użytkownik chce
-                // wymiar R wyrównany z resztą stosu wymiarów, a nie w
-                // pierwszej wolnej szczelinie, która często jest tuż przy
-                // części, przed jakąkolwiek inną linią wymiarową.
-                var occupancies = new List<double>();
-                double sheetLimitDistance = double.MaxValue;
-                for (double d = FinalMinDistanceMm; d <= FinalMaxDistanceMm; d += FinalStepMm)
+                // --- Decyzja WEWNĄTRZ czy NA ZEWNĄTRZ ---
+                // Zasada (ustalona z użytkownikiem): tekst może zostać w
+                // środku części TYLKO gdy część jest większa niż
+                // MinPartSizeForInsideMm i NIE MA w sobie żadnego otworu -
+                // wtedy w środku jest pusto i nic nie zasłania. Jak jest
+                // otwór albo część jest mała, tekst idzie na zewnątrz.
+                bool insideAllowed = facts.valid
+                    && facts.maxSizeMm > MinPartSizeForInsideMm
+                    && facts.holeCount == 0;
+
+                if (facts.valid)
                 {
-                    SetFixedDistance(rd, activeDrawing, scale, sign * d);
-                    Thread.Sleep(200);
-                    using (var shot = WindowCapture.CaptureWindow(teklaHwnd))
-                    {
-                        var diff = WindowCapture.DiffCentroid(beforeShot, shot);
-                        bool validDiff = diff.count >= MinDiffPixelsForValidProbe;
-                        double occupancy = validDiff
-                            ? WindowCapture.GetOccupancyFraction(beforeShot, diff.cx, diff.cy, OccupancyBoxSizePx)
-                            : 0.0;
-                        occupancies.Add(occupancy);
-
-                        // Krawędź arkusza to TWARDY limit - nigdy jej nie
-                        // przeskakujemy (w odróżnieniu od zwykłej treści).
-                        if (validDiff && sheetLimitDistance == double.MaxValue
-                            && WindowCapture.HasFrameOrGuideColor(beforeShot, diff.cx, diff.cy, OccupancyBoxSizePx))
-                        {
-                            sheetLimitDistance = d;
-                            log("  [WIZJA] Skan " + d.ToString("0") + "mm: osiągnięto krawędź arkusza - dalej nie szukam.");
-                            break;
-                        }
-
-                        log("  [WIZJA] Skan " + d.ToString("0") + "mm: zajętość=" + occupancy.ToString("0.00"));
-                    }
-                }
-
-                int lastOccupiedIndex = occupancies.FindLastIndex(o => o > ContentPresentOccupancyThreshold);
-                double finalDistance;
-                if (lastOccupiedIndex >= 0)
-                {
-                    double lastOccupiedDistance = FinalMinDistanceMm + lastOccupiedIndex * FinalStepMm;
-                    finalDistance = lastOccupiedDistance + ClearanceBeyondLastLineMm;
+                    log("  [WIZJA] Część: max wymiar " + facts.maxSizeMm.ToString("0") + "mm, otworów: " + facts.holeCount
+                        + " -> tekst " + (insideAllowed ? "MOŻE zostać w środku." : "musi iść na zewnątrz."));
                 }
                 else
                 {
-                    finalDistance = FinalMinDistanceMm;
+                    log("  [WIZJA] Nie udało się odczytać danych części z modelu - tekst idzie na zewnątrz (bezpieczniej).");
                 }
 
-                // Nie wychodź poza krawędź arkusza - cofnij się o jeden krok
-                // przed nią, jeśli wyliczona odległość by ją przekroczyła.
-                if (sheetLimitDistance != double.MaxValue)
+                if (insideAllowed)
                 {
-                    double maxAllowed = Math.Max(FinalMinDistanceMm, sheetLimitDistance - FinalStepMm);
-                    if (finalDistance > maxAllowed)
+                    // Do środka: znak przeciwny do "na zewnątrz". Dla
+                    // RadiusDimension ujemny Distance przenosi tekst na
+                    // przeciwną stronę środka okręgu, więc przy dużej pustej
+                    // części ląduje w jej wnętrzu - i o to tu chodzi.
+                    double insideDistance = referenceSize * InsideFraction;
+                    SetFixedDistance(rd, activeDrawing, -sign * insideDistance);
+                    Thread.Sleep(200);
+
+                    log("  [WIZJA] Tekst zostawiony w środku części (odległość " + insideDistance.ToString("0") + ").");
+
+                    beforeShot.Dispose();
+                    reference = WindowCapture.CaptureWindow(teklaHwnd);
+                    return true;
+                }
+
+                // Szukamy NAJBLIŻSZEJ pozycji na zewnątrz, w której wymiar nie
+                // nakłada się na istniejącą treść - czyli tuż przy liniach
+                // wymiarowych opisujących element, odsunięty o tyle, żeby nic
+                // nie zasłaniać. Wcześniejsza wersja lądowała "za najdalszą
+                // wykrytą linią" i przy rysunkach z rozbudowanym opisem
+                // wyrzucała wymiar absurdalnie daleko (odstęp liczony jako
+                // ułamek bounding boxa widoku, który obejmuje wszystkie linie
+                // wymiarowe, a nie samą część).
+                double outsideMin = referenceSize * OutsideMinFraction;
+                double outsideStep = (referenceSize * (OutsideMaxFraction - OutsideMinFraction)) / OutsideSteps;
+
+                double bestDistance = outsideMin;
+                bool foundClear = false;
+
+                for (int i = 0; i <= OutsideSteps; i++)
+                {
+                    double d = outsideMin + i * outsideStep;
+                    SetFixedDistance(rd, activeDrawing, sign * d);
+                    Thread.Sleep(200);
+                    using (var shot = WindowCapture.CaptureWindow(teklaHwnd))
                     {
-                        log("  [WIZJA] Wyliczone " + finalDistance.ToString("0") + "mm wychodziłoby poza arkusz - ograniczam do " + maxAllowed.ToString("0") + "mm.");
-                        finalDistance = maxAllowed;
+                        var check = WindowCapture.GetOverlapWithExisting(beforeShot, shot);
+                        if (check.changed < MinDiffPixelsForValidProbe)
+                        {
+                            log("  [WIZJA] Skan " + d.ToString("0") + ": brak widocznej zmiany - pomijam.");
+                            continue;
+                        }
+
+                        // Krawędź arkusza to TWARDY limit - dalej nie szukamy,
+                        // lepiej zostawić wymiar bliżej niż wyrzucić go za
+                        // ramkę rysunku.
+                        var diff = WindowCapture.DiffCentroid(beforeShot, shot);
+                        if (WindowCapture.HasFrameOrGuideColor(beforeShot, diff.cx, diff.cy, OccupancyBoxSizePx))
+                        {
+                            log("  [WIZJA] Skan " + d.ToString("0") + ": krawędź arkusza - dalej nie szukam.");
+                            break;
+                        }
+
+                        log("  [WIZJA] Skan " + d.ToString("0")
+                            + ": nałożenie=" + check.overlap.ToString("0.00")
+                            + " (" + check.changed + "px)");
+
+                        if (check.overlap <= OutsideMaxOverlap)
+                        {
+                            bestDistance = d;
+                            foundClear = true;
+                            break;
+                        }
+
+                        // Nic wolnego jeszcze nie znaleziono - zapamiętaj
+                        // najdalszą sprawdzoną pozycję jako wariant ostatniej
+                        // szansy (lepsze to niż zostawienie wymiaru na
+                        // konturze części).
+                        bestDistance = d;
                     }
                 }
 
-                log("  [WIZJA] Wybrana odległość: " + finalDistance.ToString("0") + "mm (" + ClearanceBeyondLastLineMm.ToString("0") + "mm za najdalszą wykrytą linią/opisem w tym kierunku).");
+                log(foundClear
+                    ? "  [WIZJA] Wybrana odległość: " + bestDistance.ToString("0") + " (najbliższe wolne miejsce na zewnątrz)."
+                    : "  [WIZJA] Nie znaleziono w pełni wolnego miejsca - używam najdalszej sprawdzonej: " + bestDistance.ToString("0") + ".");
 
-                SetFixedDistance(rd, activeDrawing, scale, sign * finalDistance);
+                SetFixedDistance(rd, activeDrawing, sign * bestDistance);
                 Thread.Sleep(200);
 
                 beforeShot.Dispose();
@@ -456,6 +487,88 @@ namespace RadiusDimensionMover
             {
                 log("  [WIZJA] Błąd podczas wizualnego wymuszania strony - użyto trybu awaryjnego (Free). Błąd: " + ex.Message);
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Fakty o części, do której należy wymiar, wzięte WPROST Z MODELU
+        /// (nie z analizy pikseli): największy wymiar bryły w mm oraz liczba
+        /// otworów. To one decydują, czy tekst wymiaru może zostać w środku
+        /// części (patrz TryPlaceSmart).
+        ///
+        /// Droga: obiekt rysunkowy Part w tym samym widoku -> jego
+        /// ModelIdentifier -> Model.SelectModelObject -> bryła i śruby/otwory.
+        /// Rysunkowy Part sam nie ma żadnych danych geometrycznych, dlatego
+        /// trzeba zejść do modelu.
+        ///
+        /// Za otwory liczymy zarówno śruby (GetBolts - stąd biorą się opisy
+        /// typu "1*Ø13"), jak i wycięcia (GetBooleans), bo otwór może być
+        /// zrobiony jednym albo drugim.
+        /// </summary>
+        private static (double maxSizeMm, int holeCount, bool valid) GetPartFacts(RadiusDimension rd, Action<string> log)
+        {
+            try
+            {
+                ViewBase view = rd.GetView();
+                if (view == null)
+                {
+                    return (0, 0, false);
+                }
+
+                var model = new Tekla.Structures.Model.Model();
+                if (!model.GetConnectionStatus())
+                {
+                    return (0, 0, false);
+                }
+
+                double maxSize = 0;
+                int holes = 0;
+                bool found = false;
+
+                DrawingObjectEnumerator parts = view.GetAllObjects(typeof(Part));
+                while (parts.MoveNext())
+                {
+                    if (!(parts.Current is Part drawingPart))
+                    {
+                        continue;
+                    }
+
+                    var modelObject = model.SelectModelObject(drawingPart.ModelIdentifier);
+                    if (!(modelObject is Tekla.Structures.Model.Part modelPart))
+                    {
+                        continue;
+                    }
+
+                    found = true;
+
+                    var solid = modelPart.GetSolid();
+                    if (solid != null)
+                    {
+                        double dx = Math.Abs(solid.MaximumPoint.X - solid.MinimumPoint.X);
+                        double dy = Math.Abs(solid.MaximumPoint.Y - solid.MinimumPoint.Y);
+                        double dz = Math.Abs(solid.MaximumPoint.Z - solid.MinimumPoint.Z);
+                        maxSize = Math.Max(maxSize, Math.Max(dx, Math.Max(dy, dz)));
+                    }
+
+                    var bolts = modelPart.GetBolts();
+                    while (bolts.MoveNext())
+                    {
+                        holes++;
+                    }
+
+                    var booleans = modelPart.GetBooleans();
+                    while (booleans.MoveNext())
+                    {
+                        holes++;
+                    }
+                }
+
+                return (maxSize, holes, found && maxSize > 0);
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke("  [DIAG] Nie udało się odczytać danych części z modelu: " + ex.Message);
+                return (0, 0, false);
             }
         }
 
@@ -478,11 +591,48 @@ namespace RadiusDimensionMover
             return new Tekla.Structures.Geometry3d.Point(ux, uy, 0);
         }
 
+        /// <summary>
+        /// Rozmiar odniesienia CZĘŚCI w jednostkach modelu - krótszy bok
+        /// bounding boxa widoku przeskalowany do modelu.
+        ///
+        /// GetAxisAlignedBoundingBox() zwraca wymiary NA PAPIERZE, a Distance
+        /// i ArcPoint1/2/3 są w jednostkach MODELU (potwierdzone empirycznie:
+        /// blacha 538mm w modelu miała bbox szerokości 148mm przy skali 1:5),
+        /// więc trzeba przemnożyć przez skalę. Bierzemy KRÓTSZY bok, bo to on
+        /// ogranicza, jak głęboko w część można wejść, nie robiąc przelotu na
+        /// drugą stronę.
+        /// </summary>
+        private static double GetModelReferenceSize(RadiusDimension rd, double scale, Action<string> log)
+        {
+            try
+            {
+                ViewBase view = rd.GetView();
+                if (view == null)
+                {
+                    return 0;
+                }
+
+                var box = view.GetAxisAlignedBoundingBox();
+                double shorterPaperSide = Math.Min(box.Width, box.Height);
+                if (shorterPaperSide <= 1e-6)
+                {
+                    return 0;
+                }
+
+                return shorterPaperSide * scale;
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke("  [DIAG] Nie udało się odczytać rozmiaru widoku: " + ex.Message);
+                return 0;
+            }
+        }
+
         private (double cx, double cy, int count, bool valid) ProbeSign(
-            RadiusDimension rd, Drawing activeDrawing, double scale, int sign, double distanceMm,
+            RadiusDimension rd, Drawing activeDrawing, int sign, double modelDistance,
             IntPtr teklaHwnd, System.Drawing.Bitmap beforeShot)
         {
-            SetFixedDistance(rd, activeDrawing, scale, sign * distanceMm);
+            SetFixedDistance(rd, activeDrawing, sign * modelDistance);
             Thread.Sleep(250);
             using (var shot = WindowCapture.CaptureWindow(teklaHwnd))
             {
@@ -494,22 +644,21 @@ namespace RadiusDimensionMover
 
         /// <summary>
         /// Ustawia wymiar R na tryb Fixed z podanym (podpisanym) Distance w
-        /// mm NA PAPIERZE (przeliczane przez skalę widoku na jednostki
-        /// modelu) - w trybie Fixed to WŁAŚNIE znak Distance kontroluje,
-        /// po której stronie linii bazowej ląduje tekst (w przeciwieństwie
-        /// do trybu Free, gdzie strona jest ustalona na sztywno per wymiar
-        /// i niezależna od żadnego atrybutu - patrz komentarz w
-        /// TryPlaceOutside).
+        /// jednostkach MODELU - w trybie Fixed to WŁAŚNIE znak Distance
+        /// kontroluje, po której stronie linii bazowej ląduje tekst (w
+        /// przeciwieństwie do trybu Free, gdzie strona jest ustalona na
+        /// sztywno per wymiar i niezależna od żadnego atrybutu - patrz
+        /// komentarz w TryPlaceSmart).
         /// </summary>
-        private static void SetFixedDistance(RadiusDimension rd, Drawing activeDrawing, double scale, double distanceMm)
+        private static void SetFixedDistance(RadiusDimension rd, Drawing activeDrawing, double modelDistance)
         {
             var attrs = rd.Attributes;
             attrs.Placing = new DimensionSetBaseAttributes.DimensionPlacingAttributes(
                 DimensionSetBaseAttributes.Placings.Fixed,
                 new PlacingDirectionAttributes(true, true),
-                new PlacingDistanceAttributes(2.0, Math.Abs(distanceMm) / scale));
+                new PlacingDistanceAttributes(2.0, Math.Abs(modelDistance)));
             rd.Attributes = attrs;
-            rd.Distance = distanceMm / scale;
+            rd.Distance = modelDistance;
             rd.Modify();
             activeDrawing.CommitChanges();
         }
@@ -518,7 +667,7 @@ namespace RadiusDimensionMover
         /// Rozstawia JEDEN wymiar R WBUDOWANYM w Teklę silnikiem
         /// auto-rozstawiania (Attributes.Placing = Placings.Free) - ten sam
         /// mechanizm co przy StraightDimensionSet. Używane jako wariant
-        /// AWARYJNY (gdy wizyjne wymuszanie strony, TryPlaceOutside, jest
+        /// AWARYJNY (gdy wizyjne wymuszanie strony, TryPlaceSmart, jest
         /// niedostępne albo zawiedzie) - Free unika kolizji z innymi
         /// elementami, ale (potwierdzone empirycznie) czasem ląduje w
         /// środku konturu części, bo wybrana strona jest ustalona na sztywno
@@ -579,16 +728,13 @@ namespace RadiusDimensionMover
         /// MarkBase.Attributes.PlacingAttributes dzieli tę samą logikę
         /// wyszukiwania (PlacingDistanceAttributes) co RadiusDimension.
         /// </summary>
-        private List<(Mark, Mark.MarkAttributes)> TightenMarks(
+        private void TightenMarks(
             List<Mark> marks, Drawing activeDrawing, Dictionary<ViewBase, double> scaleCache, Action<string> log)
         {
-            var history = new List<(Mark, Mark.MarkAttributes)>();
-
             foreach (var mark in marks)
             {
                 try
                 {
-                    Mark.MarkAttributes originalAttrs = mark.Attributes;
                     double scale = GetViewScale(mark, scaleCache, log);
 
                     // Krok 1: reset "Fixed" z małą, neutralną odległością -
@@ -620,7 +766,6 @@ namespace RadiusDimensionMover
 
                     if (modifyResult)
                     {
-                        history.Add((mark, originalAttrs));
                         log("  Opis dociągnięty bliżej (zakres " + MarkMinimalDistanceMm + "-" + MarkMaximalDistanceMm + "mm na papierze).");
                     }
                     else
@@ -633,8 +778,6 @@ namespace RadiusDimensionMover
                     log("  Pominięto jeden opis – błąd: " + ex.Message);
                 }
             }
-
-            return history;
         }
 
         /// <summary>
@@ -688,148 +831,32 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
-        /// Cofa JEDEN krok ze stosu przesunięć (ostatnie kliknięcie "Przesuń"),
-        /// przywracając zapamiętane Attributes (w tym Placing) i Distance
-        /// sprzed tego kroku. Klikając "Cofnij" wielokrotnie, cofasz kolejne
-        /// kroki jeden po drugim, aż do stanu sprzed pierwszego "Przesuń" w
-        /// tej sesji (czyli do oryginału).
+        /// Krótki opis tego, co jest teraz otwarte w Tekli - wyłącznie do
+        /// pokazania w podpisie pod przyciskiem. Przycisk "Przesuń" jest
+        /// zawsze klikalny, więc nic tu nie decyduje o jego stanie.
         /// </summary>
-        public MoveResult UndoLastMove(Action<string> log)
+        public string GetCurrentDrawingDescription()
         {
-            var result = new MoveResult();
-
-            if (_undoStack.Count == 0)
-            {
-                log("Brak zapisanej historii do cofnięcia (nie było wcześniejszego przesunięcia w tej sesji, albo już cofnięto wszystko do oryginału).");
-                return result;
-            }
-
-            var lastMove = _undoStack.Pop();
-            result.TotalCount = lastMove.Count;
-
-            // Po cofnięciu nie ma już żadnego "ostatniego przesunięcia" do
-            // porównywania - wyczyść bazę, żeby detekcja ręcznej zmiany nie
-            // odpalała się na nieaktualnych danych.
-            _lastAppliedMove = new List<(RadiusDimension, double)>();
-            _lastMoveDrawingName = null;
-
-            var drawingHandler = new DrawingHandler();
-            if (!drawingHandler.GetConnectionStatus())
-            {
-                throw new InvalidOperationException(
-                    "Nie można połączyć się z Tekla Structures. Upewnij się, że Tekla jest uruchomiona.");
-            }
-
-            Drawing activeDrawing = drawingHandler.GetActiveDrawing();
-            if (activeDrawing == null)
-            {
-                throw new InvalidOperationException(
-                    "Brak aktywnego rysunku. Otwórz rysunek pojedynczej części w edytorze rysunków Tekli.");
-            }
-
-            foreach (var entry in lastMove)
-            {
-                try
-                {
-                    entry.dim.Attributes = entry.previousAttributes;
-                    entry.dim.Distance = entry.previousDistance;
-                    if (entry.dim.Modify())
-                    {
-                        result.MovedCount++;
-                    }
-                    else
-                    {
-                        log("  Jeden wymiar R nie został przywrócony (Modify() zwróciło false).");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    log("  Pominięto jeden wymiar R przy cofaniu – błąd: " + ex.Message);
-                }
-            }
-
-            // Cofnij w tym samym kroku dociągnięte opisy (Mark) - zdejmowane
-            // ze stosu w parze z powyższym (jedno "Przesuń" = jeden wpis na
-            // obu stosach, nawet jeśli na arkuszu nie było żadnych opisów).
-            if (_markUndoStack.Count > 0)
-            {
-                var lastMarkMove = _markUndoStack.Pop();
-                foreach (var entry in lastMarkMove)
-                {
-                    try
-                    {
-                        entry.mark.Attributes = entry.previousAttributes;
-                        entry.mark.Modify();
-                    }
-                    catch (Exception ex)
-                    {
-                        log("  Pominięto jeden opis przy cofaniu – błąd: " + ex.Message);
-                    }
-                }
-            }
-
-            activeDrawing.CommitChanges();
-            log("Cofnięto jeden krok i zapisano rysunek (CommitChanges). Pozostało kroków do cofnięcia: " + _undoStack.Count);
-
-            return result;
-        }
-
-        /// <summary>
-        /// Sprawdza, czy stan się zmienił na tyle, że blokada "Przesuń"
-        /// powinna zniknąć - albo dlatego, że ktoś ręcznie poprawił pozycję
-        /// wymiaru na rysunku (Distance inne niż to, co ustawiliśmy), albo
-        /// dlatego, że aktywny rysunek w Tekli jest teraz INNY niż ten, na
-        /// którym wykonano ostatnie "Przesuń" (np. otwarto inny rysunek -
-        /// "Cofnij" i tak nie miałoby tam czego cofać). Odczyty bezpośrednio
-        /// z zapamiętanych obiektów RadiusDimension, bez ponownego
-        /// wyszukiwania po arkuszu - jeśli którykolwiek rzuci wyjątkiem (np.
-        /// usunięty, rysunek zamknięty), traktujemy to jako "coś się
-        /// zmieniło" i wolimy bezpiecznie odblokować przycisk niż zablokować
-        /// użytkownika.
-        /// </summary>
-        public bool HasAnyDimensionChangedSinceLastMove()
-        {
-            if (_lastAppliedMove.Count == 0)
-            {
-                return false;
-            }
-
             try
             {
                 var drawingHandler = new DrawingHandler();
-                if (drawingHandler.GetConnectionStatus())
+                if (!drawingHandler.GetConnectionStatus())
                 {
-                    Drawing activeDrawing = drawingHandler.GetActiveDrawing();
-                    string currentDrawingName = activeDrawing?.Name;
-                    if (currentDrawingName != _lastMoveDrawingName)
-                    {
-                        return true;
-                    }
+                    return "Brak połączenia z Teklą - uruchom Teklę i otwórz rysunek.";
                 }
+
+                Drawing activeDrawing = drawingHandler.GetActiveDrawing();
+                if (activeDrawing == null)
+                {
+                    return "Brak otwartego rysunku - otwórz rysunek w edytorze rysunków Tekli.";
+                }
+
+                return "Rysunek: " + activeDrawing.Name;
             }
-            catch
+            catch (Exception ex)
             {
-                return true;
+                return "Nie udało się odczytać stanu Tekli: " + ex.Message;
             }
-
-            const double toleranceMm = 0.01;
-
-            foreach (var entry in _lastAppliedMove)
-            {
-                try
-                {
-                    if (Math.Abs(entry.dim.Distance - entry.appliedDistance) > toleranceMm)
-                    {
-                        return true;
-                    }
-                }
-                catch
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
     }
 }
