@@ -1,5 +1,10 @@
 # Radius Dimension Mover – Tekla Structures 2025
 
+📖 **[Pełna dokumentacja projektu](https://holdfort-bananza.github.io/Radius-Dimention-Mover/)**
+— architektura, algorytm, fakty o API Tekli, ślepe uliczki, parametry,
+budowanie, diagnostyka i znane ograniczenia. Jeśli przejmujesz ten projekt,
+zacznij tam.
+
 Osobna aplikacja (.exe) do szybkiego przesuwania **wszystkich wymiarów R**
 na aktywnym rysunku na zewnątrz elementu, żeby tekst nie wpadał w kontur
 rysunku ani w inne teksty/wymiary.
