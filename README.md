@@ -28,7 +28,7 @@ rysunku ani w inne teksty/wymiary.
    W środku zostaje tylko wtedy, gdy spełnione są OBA warunki:
    - część nie ma **żadnego** otworu (`GetBolts()` + `GetBooleans()` = 0),
    - **krótszy** wymiar płaszczyzny blachy (bez grubości) jest co najmniej
-     120mm i co najmniej 3× promień łuku.
+     60mm i co najmniej 3× promień łuku (stała `InsideMinShortFaceMm`).
 
    W przeciwnym razie tekst idzie na zewnątrz, w pobliże linii wymiarowych
    opisujących element.
@@ -41,7 +41,7 @@ rysunku ani w inne teksty/wymiary.
    Dlaczego próg jest na **krótszym wymiarze płaszczyzny**, a nie na
    największym wymiarze bryły: blacha 65,5 × 180,8 bez otworów, w której
    tekst spokojnie się mieścił, była wyrzucana na zewnątrz, bo 180,8 nie
-   przechodziło progu 300mm. Dlaczego dodatkowo próg **bezwzględny** 120mm:
+   przechodziło progu 300mm. Dlaczego dodatkowo próg **bezwzględny**:
    patrz "Znane ograniczenia" - bez niego wymiary na blachy 66 × 181
    przelatywały na skos przez materiał i lądowały POD nią.
 7. Ustawia `Distance` jako ułamek rzeczywistego rozmiaru części (ze znakiem
@@ -85,7 +85,7 @@ uruchomienie liczyło coraz większe odległości - na blachy 175mm doszło do
 - **Z tego wynika najważniejsze ograniczenie: `Distance` nie przekłada się
   wprost na odległość tekstu.** Na blachy 66 × 181 przy `Distance=23` tekst
   odjechał od łuku ~100mm. Dlatego umieszczanie WEWNĄTRZ jest dopuszczone
-  tylko dla blach szerokich (patrz próg 120mm) - na węższych oba wymiary R
+  tylko powyżej progu `InsideMinShortFaceMm` - poniżej oba wymiary R
   przelatywały na skos przez materiał i lądowały pod blachą, jeden na drugim
   i na wymiarze długości. Nie da się tego rozwiązać dokładniejszym
   liczeniem, dopóki API nie podaje pozycji tekstu.

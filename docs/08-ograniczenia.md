@@ -49,18 +49,23 @@ nieszkodliwe — odsunięcie jest prostopadłe i tylko o brakującą różnicę.
 
 ---
 
-## Umieszczanie wewnątrz części — tylko szerokie blachy
+## Umieszczanie wewnątrz części
 
-Wymiar zostaje w środku dopiero przy krótszym wymiarze płaszczyzny **≥ 120 mm**
-(`InsideMinShortFaceMm`), i tylko gdy część nie ma otworów.
+Wymiar zostaje w środku, gdy część nie ma otworów, a krótszy wymiar
+płaszczyzny przekracza `InsideMinShortFaceMm` — **obecnie 60 mm**.
 
-**Dlaczego nie na wąskich:** ujemny `Distance` nie oznacza „bliżej, w głąb
-materiału" — przenosi tekst na przeciwną stronę środka okręgu. Przy
-zaokrągleniu narożnika daje to długą linię odniesienia przez część. Na blachy
-66 × 181 (bez otworów, `Distance = 23`) oba wymiary R przeleciały na skos i
-wylądowały **pod** blachą, jeden na drugim i na wymiarze długości.
+⚠️ **Przy 60 mm wąskie blachy wychodzą źle.** Ujemny `Distance` nie oznacza
+„bliżej, w głąb materiału" — przenosi tekst na przeciwną stronę środka okręgu.
+Przy zaokrągleniu narożnika daje to długą linię odniesienia przez część. Na
+blachy **66 × 181** (bez otworów, `Distance = 23`) oba wymiary R przeleciały na
+skos i wylądowały **pod** blachą, jeden na drugim i na wymiarze długości.
 
-To zostało sprawdzone: obniżenie progu do 60 mm odtwarza dokładnie ten wynik.
+Zmierzone: tekst odjechał od łuku ~100 mm przy `Distance = 23`, a blacha ma
+66 mm wysokości.
+
+**Wartość 60 mm jest ustawiona świadomie, na życzenie.** Wariant bezpieczny to
+`120.0` — wtedy w środku zostają tylko szerokie blachy (np. 538 × 141), gdzie
+takie przestrzelenie nie wyprowadza tekstu poza obrys.
 
 **Co by to naprawiło:** znajomość pozycji tekstu. Bez niej jedyne obejście, jakie
 widzę, to zrezygnować z `Distance` i wstawiać własny obiekt tekstowy w

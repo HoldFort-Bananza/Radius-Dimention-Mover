@@ -56,12 +56,16 @@ namespace RadiusDimensionMover
         // wylądowały POD blachą, na sobie i na wymiarze długości. Do środka
         // wchodzimy tylko wtedy, gdy blacha jest szeroka na tyle, że takie
         // przestrzelenie nie wyprowadza tekstu poza obrys.
-        // 120mm = wartość sprawdzona jako bezpieczna. Obniżenie do 60mm
-        // przetestowano na blachy 66 x 181: oba wymiary R przeleciały wtedy
-        // na skos przez materiał i wylądowały POD blachą, jeden na drugim i
-        // na wymiarze długości. Nie obniżaj bez ponownego sprawdzenia na
-        // wąskiej blachy.
-        private const double InsideMinShortFaceMm = 120.0;
+        // 60mm = wartość wybrana przez użytkownika (świadomie, po zobaczeniu
+        // wyniku). Przy niej do środka wchodzą też wąskie blachy.
+        //
+        // Znany skutek: na blachy 66 x 181 bez otworów oba wymiary R
+        // przelatują na skos przez materiał i lądują POD blachą, jeden na
+        // drugim i na wymiarze długości. Przyczyna nie jest w tej stałej -
+        // Distance nie przekłada się wprost na odległość tekstu (przy
+        // Distance=23 tekst odjechał ~100mm). 120mm to wartość, przy której
+        // takie przestrzelenie zostaje w obrysie.
+        private const double InsideMinShortFaceMm = 60.0;
 
         // Jak głęboko w część wchodzi tekst, gdy wolno mu tam zostać -
         // ułamek KRÓTSZEGO wymiaru płaszczyzny, żeby tekst nie wyszedł

@@ -87,7 +87,7 @@ Tekst zostaje **wewnątrz** części tylko gdy spełnione są **oba** warunki:
 
 ```csharp
 bool roomInside = facts.FaceShortMm >= radius * InsideRoomRadiusFactor  // ≥ 3× promień
-               && facts.FaceShortMm >= InsideMinShortFaceMm;            // ≥ 120 mm
+               && facts.FaceShortMm >= InsideMinShortFaceMm;            // ≥ 60 mm
 bool insideAllowed = facts.HoleCount == 0 && roomInside;
 ```
 
@@ -97,10 +97,12 @@ bool insideAllowed = facts.HoleCount == 0 && roomInside;
   ogranicza, czy tekst się zmieści. Nie największy wymiar bryły: blacha
   65,5 × 180,8 bez otworów była przez to wyrzucana na zewnątrz, choć miejsca
   było dość.
-- **Próg bezwzględny 120 mm** — konieczny, bo `Distance` nie przekłada się
-  wprost na odległość tekstu. Bez niego na blachy 66 × 181 oba wymiary R
-  przelatywały na skos przez materiał i lądowały **pod** blachą, jeden na
-  drugim. Patrz [Ograniczenia](08-ograniczenia.md).
+- **Próg bezwzględny `InsideMinShortFaceMm`** — istnieje, bo `Distance` nie
+  przekłada się wprost na odległość tekstu. Obecnie **60 mm**; przy tej
+  wartości na blachy 66 × 181 oba wymiary R przelatują na skos przez materiał
+  i lądują **pod** blachą. Wariant bezpieczny to 120 mm. Patrz
+  [Parametry](05-parametry.md#insideminshortfacemm--najbardziej-wrażliwa-stała)
+  i [Ograniczenia](08-ograniczenia.md#umieszczanie-wewnątrz-części).
 
 ### 2d. Ustawienie odległości
 

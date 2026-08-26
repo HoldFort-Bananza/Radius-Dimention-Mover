@@ -14,7 +14,7 @@ kliknięcie, bez podawania zmiennych".
 |---|---|---|
 | `OutwardSign` | `-1.0` | Znak `Distance` odpowiadający kierunkowi **na zewnątrz**. |
 | `InsideRoomRadiusFactor` | `3.0` | Wewnątrz tylko gdy krótszy wymiar płaszczyzny ≥ 3× promień łuku. |
-| `InsideMinShortFaceMm` | `120.0` | Wewnątrz tylko gdy krótszy wymiar płaszczyzny ≥ 120 mm. |
+| `InsideMinShortFaceMm` | `60.0` | Wewnątrz tylko gdy krótszy wymiar płaszczyzny ≥ 60 mm. |
 | `InsideFraction` | `0.35` | Głębokość wejścia w część = ułamek **krótszego** wymiaru płaszczyzny. |
 | `OutsideFraction` | `0.10` | Odległość na zewnątrz = ułamek **dłuższego** wymiaru płaszczyzny. |
 
@@ -27,22 +27,29 @@ konwencja jest globalna.
 Wartość ustalona empirycznie: API nie pozwala jej wyliczyć, ale kilkanaście
 niezależnych pomiarów na trzech rysunkach dało za każdym razem ten sam wynik.
 
-### `InsideMinShortFaceMm` — najbardziej ryzykowna stała
+### `InsideMinShortFaceMm` — najbardziej wrażliwa stała
 
-⚠️ **Nie obniżaj bez testu na wąskiej blachy.** Obniżenie do `60.0` zostało
-sprawdzone na blachy 66 × 181 bez otworów: oba wymiary R przeleciały na skos
-przez materiał i wylądowały **pod** blachą, jeden na drugim i na wymiarze
-długości.
-
-Przyczyna leży poza tą stałą — `Distance` nie przekłada się wprost na
-odległość tekstu (przy `Distance = 23` tekst odjechał ~100 mm). Próg 120 mm
-istnieje właśnie po to, żeby takie przestrzelenie zostało w obrysie.
+Decyduje, jak wąska blacha jeszcze dostaje wymiar w środku.
 
 | Wartość | Skutek |
 |---|---|
-| `120.0` (obecnie) | Wewnątrz tylko szerokie blachy (np. 538 × 141). Sprawdzone, bezpieczne. |
-| `60.0` | Wąskie blachy też idą do środka — i wychodzi z tego bałagan (patrz wyżej). |
+| `60.0` (**obecnie**) | Wąskie blachy też idą do środka. Wybrane świadomie — patrz ostrzeżenie niżej. |
+| `120.0` | Wewnątrz tylko szerokie blachy (np. 538 × 141). Wariant bezpieczny. |
 | bardzo duża (np. `9999`) | Praktycznie wyłącza umieszczanie wewnątrz. |
+
+⚠️ **Znany skutek ustawienia 60 mm.** Na blachy **66 × 181 bez otworów** oba
+wymiary R przelatują na skos przez materiał i lądują **pod** blachą, jeden na
+drugim i na wymiarze długości. Sprawdzone na żywym rysunku.
+
+Przyczyna nie leży w tej stałej: `Distance` nie przekłada się wprost na
+odległość tekstu — przy `Distance = 23` tekst odjechał od łuku ~100 mm, a
+blacha ma tylko 66 mm wysokości, więc kierunek „do środka" z górnego narożnika
+wychodzi dolną krawędzią. Wartość `120.0` to próg, przy którym takie
+przestrzelenie zostaje w obrysie.
+
+Jeśli zobaczysz teksty wymiarów pod częścią albo nachodzące na siebie —
+podnieś tę stałą do `120.0`. Szersze wyjaśnienie:
+[Ograniczenia](08-ograniczenia.md#umieszczanie-wewnątrz-części).
 
 ### `InsideFraction` / `OutsideFraction`
 
