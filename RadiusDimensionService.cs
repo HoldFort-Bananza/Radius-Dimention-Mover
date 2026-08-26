@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Tekla.Structures.Drawing;
 
 namespace RadiusDimensionMover
@@ -12,13 +13,15 @@ namespace RadiusDimensionMover
 
     public class RadiusDimensionService
     {
-        // Stos kolejnych "przesunięć" - każde kliknięcie "Przesuń" dokłada
-        // na wierzch jeden zestaw (wymiar R -> Distance SPRZED tego kliknięcia).
-        // Każde kliknięcie "Cofnij" zdejmuje jeden zestaw ze stosu i przywraca
-        // te wartości, więc klikając "Cofnij" wielokrotnie, wracasz krok po
-        // kroku aż do stanu sprzed pierwszego "Przesuń" (oryginału).
-        private readonly Stack<List<(RadiusDimension dim, double previousDistance)>> _undoStack
-            = new Stack<List<(RadiusDimension, double)>>();
+        // Stos kolejnych "przesunięć" - każde kliknięcie "Przesuń" dokłada na
+        // wierzch jeden zestaw (wymiar R -> pełne Attributes + Distance
+        // SPRZED tego kliknięcia). Każde kliknięcie "Cofnij" zdejmuje jeden
+        // zestaw ze stosu i przywraca te wartości, więc klikając "Cofnij"
+        // wielokrotnie, wracasz krok po kroku aż do stanu sprzed pierwszego
+        // "Przesuń" (oryginału). Przywracamy CAŁE Attributes (nie tylko
+        // Distance), bo tryb Free/Fixed to część Attributes.Placing.
+        private readonly Stack<List<(RadiusDimension dim, RadiusDimensionAttributes previousAttributes, double previousDistance)>> _undoStack
+            = new Stack<List<(RadiusDimension, RadiusDimensionAttributes, double)>>();
 
         // Wartości Distance ustawione przez OSTATNIE udane "Przesuń" - używane
         // do wykrycia, czy użytkownik ręcznie przesunął któryś wymiar R na
@@ -33,37 +36,57 @@ namespace RadiusDimensionMover
         // miałoby czego cofać na nowym rysunku.
         private string _lastMoveDrawingName;
 
-        /// <summary>
-        /// SPRAWDZONA W PRAKTYCE metoda: zwiększa Distance wszystkich
-        /// wymiarów R na aktywnym rysunku o offsetMm - mm NA PAPIERZE,
-        /// przeliczane przez skalę widoku (RadiusDimension.Distance jest w
-        /// jednostkach MODELU, nie papieru - potwierdzone empirycznie na
-        /// żywym rysunku "Einzelteil Blech" w skali 5:1, gdzie bez
-        /// przeliczenia krok 100mm renderował się jako ~400-500mm na papierze).
-        ///
-        /// WAŻNE - dlaczego nie ma tu automatycznego omijania kolizji:
-        /// Tekla Open API nie udostępnia ŻADNEGO sposobu odczytania ani
-        /// przewidzenia rzeczywistej pozycji/kierunku tekstu wymiaru R.
-        /// Sprawdzone empirycznie: ArcPoint1/2/3 są całkowicie STAŁE
-        /// niezależnie od wartości Distance (logowano te same współrzędne
-        /// przy Distance=3 i Distance=88,7) - to punkty definiujące geometrię
-        /// samego łuku, niezwiązane z pozycją tekstu/leadera. Próby zgadywania
-        /// kierunku geometrycznie (środek okręgu łuku, potem środek widoku)
-        /// dawały błędne wyniki na żywych rysunkach. Sprawdzone też (i odrzucone,
-        /// żeby nie próbować od nowa): RadiusDimension nie implementuje
-        /// IAxisAlignedBoundingBox (sprawdzone refleksją po całym
-        /// Tekla.Structures.Drawing.dll); rd.GetRelatedObjects() zwraca 0
-        /// obiektów na żywym rysunku; rd.GetDimensionSet() rzuca wyjątek
-        /// ("nieprawidłowa operacja") dla pojedynczego wymiaru R spoza
-        /// łańcucha wymiarowego. Dlatego to Ty oceniasz wzrokowo w Tekli, czy
-        /// krok wystarczył, i w razie potrzeby klikasz "Cofnij" + próbujesz
-        /// ponownie z innym krokiem.
-        /// </summary>
-        public MoveResult MoveAllRadiusDimensionsOutward(double offsetMm, bool oppositeDirection, Action<string> log)
-        {
-            var thisMoveHistory = new List<(RadiusDimension, double)>();
-            var appliedNow = new List<(RadiusDimension, double)>();
+        // --- Parametry wyszukiwania wolnego miejsca (mm NA PAPIERZE,
+        // przeliczane przez skalę widoku na jednostki modelu przed wysłaniem
+        // do API - PlacingDistanceAttributes jest w tych samych jednostkach
+        // co Distance, czyli w jednostkach modelu, nie papieru). ---
+        private const double SearchMarginMm = 30.0;
+        private const double MinimalDistanceMm = 15.0;
+        private const double MaximalDistanceMm = 300.0;
 
+        // Mały "neutralny" krok używany tylko po to, żeby wymusić świeże
+        // przeliczenie przez Teklę przy przełączaniu Fixed -> Free (patrz
+        // komentarz w AutoPlaceWithCollisionAvoidance).
+        private const double ResetDistanceMm = 4.0;
+
+        /// <summary>
+        /// AUTOMATYCZNE rozstawianie wszystkich wymiarów R na aktywnym
+        /// rysunku, unikając kolizji z innymi elementami - używając
+        /// WBUDOWANEGO w Teklę silnika auto-rozstawiania wymiarów
+        /// (RadiusDimensionAttributes.Placing = Placings.Free), a nie
+        /// własnych zgadywanek.
+        ///
+        /// Znalezione po tym, jak wcześniejsze próby (patrz historia w git)
+        /// zawiodły: RadiusDimension nie ma żadnej metody do odczytania
+        /// swojej rzeczywistej pozycji na rysunku (ArcPoint1/2/3 są stałe,
+        /// brak IAxisAlignedBoundingBox, GetRelatedObjects()/GetDimensionSet()
+        /// nic nie dają) - więc nie da się zbudować własnego, niezawodnego
+        /// wykrywania kolizji. Okazało się jednak, że Tekla ma do tego
+        /// WŁASNY, wbudowany mechanizm (ten sam co przy StraightDimensionSet
+        /// - "Placing: Free/Fixed"), który po prostu trzeba było znaleźć w
+        /// atrybutach (odziedziczonych z DimensionSetBaseAttributes, nie
+        /// zadeklarowanych bezpośrednio na RadiusDimensionAttributes - stąd
+        /// wcześniej przeoczone).
+        ///
+        /// WAŻNE - dwuetapowość jest konieczna: samo ustawienie Placing=Free
+        /// z nowymi parametrami wyszukiwania NIE wymusza ponownego
+        /// przeliczenia, jeśli wymiar był już wcześniej w trybie Free
+        /// (Tekla zdaje się cache'ować wynik). Trzeba najpierw przełączyć na
+        /// Fixed z dowolnym Distance, zapisać, i DOPIERO wtedy przełączyć
+        /// na Free ze świeżymi parametrami - potwierdzone empirycznie na
+        /// żywym rysunku (dwa wymiary R, oba wylądowały w czystych,
+        /// nienachodzących na siebie ani na inne elementy miejscach).
+        ///
+        /// WAŻNE - jednostki: PlacingDistanceAttributes (SearchMargin,
+        /// MinimalDistance, MaximalDistance) są w jednostkach MODELU, tak
+        /// samo jak zwykłe Distance - trzeba dzielić przez skalę widoku,
+        /// inaczej (potwierdzone empirycznie) wymiar wyleci daleko poza
+        /// widok przy widoku w powiększonej skali.
+        /// </summary>
+        public MoveResult AutoPlaceWithCollisionAvoidance(Action<string> log)
+        {
+            var thisMoveHistory = new List<(RadiusDimension, RadiusDimensionAttributes, double)>();
+            var appliedNow = new List<(RadiusDimension, double)>();
             var result = new MoveResult();
 
             var drawingHandler = new DrawingHandler();
@@ -89,12 +112,10 @@ namespace RadiusDimensionMover
             }
 
             var radiusDimensions = new List<RadiusDimension>();
-
             DrawingObjectEnumerator objectEnum = sheet.GetAllObjects();
             while (objectEnum.MoveNext())
             {
-                var rd = objectEnum.Current as RadiusDimension;
-                if (rd != null)
+                if (objectEnum.Current is RadiusDimension rd)
                 {
                     radiusDimensions.Add(rd);
                 }
@@ -103,29 +124,49 @@ namespace RadiusDimensionMover
             result.TotalCount = radiusDimensions.Count;
             log("Znaleziono " + result.TotalCount + " wymiar(ów) R.");
 
-            // Skala widoku jest taka sama dla wymiarów z tego samego widoku -
-            // liczymy raz na widok, nie raz na wymiar.
             var scaleCache = new Dictionary<ViewBase, double>();
 
             foreach (var rd in radiusDimensions)
             {
                 try
                 {
-                    double currentDistance = rd.Distance;
+                    RadiusDimensionAttributes originalAttrs = rd.Attributes;
+                    double originalDistance = rd.Distance;
                     double scale = GetViewScale(rd, scaleCache, log);
 
-                    double magnitude = Math.Abs(currentDistance) + offsetMm / scale;
-                    double newDistance = oppositeDirection ? -magnitude : magnitude;
+                    // Krok 1: reset do Fixed - wymusza świeże przeliczenie
+                    // przy następnym przełączeniu na Free (patrz dokumentacja
+                    // metody wyżej).
+                    var resetAttrs = rd.Attributes;
+                    resetAttrs.Placing = new DimensionSetBaseAttributes.DimensionPlacingAttributes(
+                        DimensionSetBaseAttributes.Placings.Fixed,
+                        new PlacingDirectionAttributes(true, true),
+                        new PlacingDistanceAttributes(2.0, ResetDistanceMm / scale));
+                    rd.Attributes = resetAttrs;
+                    rd.Distance = ResetDistanceMm / scale;
+                    rd.Modify();
+                    activeDrawing.CommitChanges();
+                    Thread.Sleep(300);
 
-                    log($"  Wymiar R: Distance {currentDistance:F2} -> {newDistance:F2} (jedn. modelu; skala widoku {scale:F3}; krok {offsetMm:F1}mm na papierze).");
+                    // Krok 2: przełącz na Free z realnymi parametrami
+                    // wyszukiwania (mm na papierze -> jednostki modelu).
+                    var freeAttrs = rd.Attributes;
+                    freeAttrs.Placing = new DimensionSetBaseAttributes.DimensionPlacingAttributes(
+                        DimensionSetBaseAttributes.Placings.Free,
+                        new PlacingDirectionAttributes(true, true),
+                        new PlacingDistanceAttributes(SearchMarginMm / scale, MinimalDistanceMm / scale, MaximalDistanceMm / scale));
+                    rd.Attributes = freeAttrs;
 
-                    thisMoveHistory.Add((rd, currentDistance));
-                    rd.Distance = newDistance;
+                    bool modifyResult = rd.Modify();
+                    activeDrawing.CommitChanges();
+                    Thread.Sleep(300);
 
-                    if (rd.Modify())
+                    if (modifyResult)
                     {
                         result.MovedCount++;
-                        appliedNow.Add((rd, newDistance));
+                        thisMoveHistory.Add((rd, originalAttrs, originalDistance));
+                        appliedNow.Add((rd, rd.Distance));
+                        log("  Wymiar R rozstawiony automatycznie (Tekla Placing=Free, margines " + SearchMarginMm + "mm, zakres " + MinimalDistanceMm + "-" + MaximalDistanceMm + "mm na papierze).");
                     }
                     else
                     {
@@ -138,12 +179,12 @@ namespace RadiusDimensionMover
                 }
             }
 
-            activeDrawing.CommitChanges();
-            log("Zapisano zmiany w rysunku (CommitChanges).");
-
             _undoStack.Push(thisMoveHistory);
             _lastAppliedMove = appliedNow;
-            _lastMoveDrawingName = activeDrawing.Name;
+            if (radiusDimensions.Count > 0)
+            {
+                _lastMoveDrawingName = activeDrawing.Name;
+            }
 
             return result;
         }
@@ -200,10 +241,10 @@ namespace RadiusDimensionMover
 
         /// <summary>
         /// Cofa JEDEN krok ze stosu przesunięć (ostatnie kliknięcie "Przesuń"),
-        /// przywracając zapamiętane wartości Distance sprzed tego kroku.
-        /// Klikając "Cofnij" wielokrotnie, cofasz kolejne kroki jeden po
-        /// drugim, aż do stanu sprzed pierwszego "Przesuń" w tej sesji
-        /// (czyli do oryginału).
+        /// przywracając zapamiętane Attributes (w tym Placing) i Distance
+        /// sprzed tego kroku. Klikając "Cofnij" wielokrotnie, cofasz kolejne
+        /// kroki jeden po drugim, aż do stanu sprzed pierwszego "Przesuń" w
+        /// tej sesji (czyli do oryginału).
         /// </summary>
         public MoveResult UndoLastMove(Action<string> log)
         {
@@ -242,6 +283,7 @@ namespace RadiusDimensionMover
             {
                 try
                 {
+                    entry.dim.Attributes = entry.previousAttributes;
                     entry.dim.Distance = entry.previousDistance;
                     if (entry.dim.Modify())
                     {

@@ -11,29 +11,34 @@ rysunku ani w inne teksty/wymiary.
    osobny plik .exe, a nie skrypt uruchamiany z wnętrza Tekli.
 2. Bierze aktualnie otwarty rysunek (`GetActiveDrawing()`).
 3. Przechodzi po wszystkich obiektach na arkuszu i wybiera te typu `RadiusDimension`.
-4. Dla każdego z nich zwiększa `Distance` o wpisany krok (mm **na papierze** –
-   przeliczane przez skalę widoku, `View.Attributes.Scale`, więc krok znaczy
-   to samo niezależnie od skali rysunku) w kierunku, który Tekla sama wybiera.
+4. Dla każdego z nich ustawia `Attributes.Placing` na tryb **`Free`**
+   (wbudowany w Teklę silnik auto-rozstawiania wymiarów - ten sam mechanizm,
+   co przy łańcuchach wymiarów prostych) z zakresem szukania 15-300mm i
+   marginesem 30mm **na papierze** (przeliczane przez skalę widoku,
+   `View.Attributes.Scale`), pozwalając obu kierunkom. Tekla sama znajduje
+   wolne miejsce i unika kolizji z innymi tekstami/wymiarami - program nie
+   zgaduje pozycji, tylko prosi Teklę, żeby to zrobiła sama.
 5. Zapisuje zmiany (`Modify()` na każdym wymiarze + `CommitChanges()` na rysunku).
 
-Program **nie próbuje automatycznie omijać kolizji** z innymi tekstami czy
-wymiarami – Tekla Open API nie udostępnia żadnego sposobu odczytania ani
-przewidzenia rzeczywistej pozycji tekstu wymiaru R (`ArcPoint1/2/3` są stałe
-niezależnie od `Distance` – sprawdzone empirycznie), więc nie da się tego
-zbudować wiarygodnie. Klikasz "Przesuń", oceniasz wzrokowo w Tekli, i jeśli
-trzeba – "Cofnij" i próbujesz ponownie z innym krokiem.
+Wcześniejsze podejścia (ręczny stały krok, zgadywanie kierunku geometrycznie,
+a nawet analiza pikseli na zrzutach ekranu) okazały się zawodne albo kruche -
+`RadiusDimension` nie ma żadnego sposobu odczytania własnej pozycji na
+rysunku. Rozwiązaniem okazało się użycie wbudowanego w samą Teklę mechanizmu
+`Placing.Free`, znalezionego przez analogię do `StraightDimensionSet`
+(`DimensionSetBaseAttributes.Placings`) - odziedziczonego przez
+`RadiusDimensionAttributes`, ale nie widocznego bez sprawdzenia pełnej
+hierarchii klas.
 
 ## Bezpieczniki
 
 - **Blokada po przesunięciu**: po udanym kliknięciu "Przesuń" przycisk się
   blokuje, dopóki nie klikniesz "Cofnij" – chroni przed przypadkowym
-  wielokrotnym klikaniem (np. gdy Tekla na chwilę nie odpowiada), które
-  wypchnęłoby wymiar dużo dalej niż zamierzone.
+  wielokrotnym klikaniem (np. gdy Tekla na chwilę nie odpowiada).
 - **Wykrywanie ręcznej zmiany**: jeśli po przesunięciu ręcznie poprawisz
-  pozycję wymiaru w Tekli, program to zauważy przy powrocie do okna (fokus
-  okna) i sam odblokuje przycisk "Przesuń".
-- **Cofnij**: przywraca oryginalną wartość `Distance` sprzed ostatniego
-  kliknięcia "Przesuń", krok po kroku.
+  pozycję wymiaru w Tekli (albo otworzysz inny rysunek), program to zauważy
+  przy powrocie do okna (fokus okna) i sam odblokuje przycisk "Przesuń".
+- **Cofnij**: przywraca oryginalne `Attributes` (w tym tryb Placing) i
+  `Distance` sprzed ostatniego kliknięcia "Przesuń", krok po kroku.
 - **Log sesji**: każda sesja programu zapisuje pełny log do pliku w
   `logs\session_<data_godzina>.log` obok pliku .exe.
 
@@ -63,11 +68,11 @@ biblioteki).
 
 1. Uruchom Teklę, otwórz model, otwórz w edytorze rysunek pojedynczej części.
 2. Uruchom Radius Dimension Mover (skrót z Menu Start/pulpitu).
-3. Ustaw krok w mm (domyślnie 40mm).
-4. Kliknij **"Przesuń wszystkie wymiary R (+krok)"**.
-5. Log w oknie pokaże ile wymiarów znaleziono i ile udało się przesunąć.
-6. Wróć do Tekli i oceń wzrokowo – jeśli krok nie wystarczył, kliknij
-   "Cofnij" i spróbuj ponownie z innym krokiem.
+3. Kliknij **"Przesuń wszystkie wymiary R (unikaj kolizji)"** - jeden
+   przycisk, bez żadnych parametrów do wpisywania.
+4. Log w oknie pokaże ile wymiarów znaleziono i ile udało się rozstawić.
+5. Wróć do Tekli i sprawdź wzrokowo. Jeśli coś jest nie tak, kliknij
+   "Cofnij", żeby wrócić do stanu sprzed operacji.
 
 ## Budowanie z kodu źródłowego (dla programistów)
 
