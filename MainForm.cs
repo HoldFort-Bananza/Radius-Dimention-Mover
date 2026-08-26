@@ -166,7 +166,7 @@ namespace RadiusDimensionMover
                 {
                     _canRun = true;
                     _runButton.Enabled = true;
-                    _statusLabel.Text = "Wykryto ręczną zmianę wymiaru na rysunku – przycisk Przesuń odblokowany.";
+                    _statusLabel.Text = "Wykryto zmianę rysunku lub ręczną zmianę wymiaru – przycisk Przesuń odblokowany.";
                 }
             }
             catch

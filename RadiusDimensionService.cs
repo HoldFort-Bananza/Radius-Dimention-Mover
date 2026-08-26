@@ -27,6 +27,12 @@ namespace RadiusDimensionMover
         private List<(RadiusDimension dim, double appliedDistance)> _lastAppliedMove
             = new List<(RadiusDimension, double)>();
 
+        // Nazwa rysunku, na którym wykonano ostatnie udane "Przesuń" - jeśli
+        // aktywny rysunek w Tekli się zmieni (np. otworzysz inny rysunek),
+        // blokada przycisku "Przesuń" powinna zniknąć, bo "Cofnij" i tak nie
+        // miałoby czego cofać na nowym rysunku.
+        private string _lastMoveDrawingName;
+
         /// <summary>
         /// SPRAWDZONA W PRAKTYCE metoda: zwiększa Distance wszystkich
         /// wymiarów R na aktywnym rysunku o offsetMm - mm NA PAPIERZE,
@@ -131,6 +137,7 @@ namespace RadiusDimensionMover
 
             _undoStack.Push(thisMoveHistory);
             _lastAppliedMove = appliedNow;
+            _lastMoveDrawingName = activeDrawing.Name;
 
             return result;
         }
@@ -209,6 +216,7 @@ namespace RadiusDimensionMover
             // porównywania - wyczyść bazę, żeby detekcja ręcznej zmiany nie
             // odpalała się na nieaktualnych danych.
             _lastAppliedMove = new List<(RadiusDimension, double)>();
+            _lastMoveDrawingName = null;
 
             var drawingHandler = new DrawingHandler();
             if (!drawingHandler.GetConnectionStatus())
@@ -251,20 +259,41 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
-        /// Sprawdza, czy któryś z wymiarów R przesuniętych ostatnim udanym
-        /// "Przesuń" ma teraz Distance inne niż to, co wtedy ustawiliśmy -
-        /// czyli czy ktoś ręcznie poprawił pozycję na rysunku (np. przeciągając
-        /// wymiar w Tekli) od tamtego momentu. Odczyty bezpośrednio z
-        /// zapamiętanych obiektów RadiusDimension, bez ponownego wyszukiwania
-        /// po arkuszu - jeśli którykolwiek rzuci wyjątkiem (np. usunięty,
-        /// rysunek zamknięty), traktujemy to jako "coś się zmieniło" i wolimy
-        /// bezpiecznie odblokować przycisk niż zablokować użytkownika.
+        /// Sprawdza, czy stan się zmienił na tyle, że blokada "Przesuń"
+        /// powinna zniknąć - albo dlatego, że ktoś ręcznie poprawił pozycję
+        /// wymiaru na rysunku (Distance inne niż to, co ustawiliśmy), albo
+        /// dlatego, że aktywny rysunek w Tekli jest teraz INNY niż ten, na
+        /// którym wykonano ostatnie "Przesuń" (np. otwarto inny rysunek -
+        /// "Cofnij" i tak nie miałoby tam czego cofać). Odczyty bezpośrednio
+        /// z zapamiętanych obiektów RadiusDimension, bez ponownego
+        /// wyszukiwania po arkuszu - jeśli którykolwiek rzuci wyjątkiem (np.
+        /// usunięty, rysunek zamknięty), traktujemy to jako "coś się
+        /// zmieniło" i wolimy bezpiecznie odblokować przycisk niż zablokować
+        /// użytkownika.
         /// </summary>
         public bool HasAnyDimensionChangedSinceLastMove()
         {
             if (_lastAppliedMove.Count == 0)
             {
                 return false;
+            }
+
+            try
+            {
+                var drawingHandler = new DrawingHandler();
+                if (drawingHandler.GetConnectionStatus())
+                {
+                    Drawing activeDrawing = drawingHandler.GetActiveDrawing();
+                    string currentDrawingName = activeDrawing?.Name;
+                    if (currentDrawingName != _lastMoveDrawingName)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                return true;
             }
 
             const double toleranceMm = 0.01;
