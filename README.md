@@ -1,6 +1,6 @@
 # Radius Dimension Mover – Tekla Structures 2025
 
-📖 **[Pełna dokumentacja projektu](https://holdfort-bananza.github.io/Radius-Dimention-Mover/)**
+📖 **[Pełna dokumentacja projektu — Wiki](https://github.com/HoldFort-Bananza/Radius-Dimention-Mover/wiki)**
 — architektura, algorytm, fakty o API Tekli, ślepe uliczki, parametry,
 budowanie, diagnostyka i znane ograniczenia. Jeśli przejmujesz ten projekt,
 zacznij tam.
