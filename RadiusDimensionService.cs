@@ -243,9 +243,11 @@ namespace RadiusDimensionMover
             }
             log("  Wykryto " + obstacles.Count + " lini(i) wymiarowych jako przeszkody.");
 
-            // Promienie linii odniesienia wymiarów R - potrzebne w ostatnim
-            // etapie, żeby wiedzieć, czego opisy mają nie zasłaniać.
-            var leaderRays = new List<LeaderRay>();
+            // Rozstawianie wymiarów R w trzech krokach: policz wszystkie
+            // położenia, WYRÓWNAJ te idące w tę samą stronę, i dopiero wtedy
+            // zapisz. Wyrównanie wymaga znajomości wszystkich planów naraz,
+            // dlatego liczenie jest oddzielone od zapisu.
+            var plans = new List<PlacementPlan>();
 
             foreach (var rd in radiusDimensions)
             {
@@ -253,28 +255,47 @@ namespace RadiusDimensionMover
                 {
                     double scale = GetViewScale(rd, scaleCache, log);
 
-                    var ray = TryPlaceByGeometry(rd, obstacles, scale, log);
-                    if (ray == null)
+                    var plan = ComputePlan(rd, obstacles, scale, log);
+                    if (plan == null)
                     {
                         // Geometria się nie udała (np. zdegenerowany łuk) -
                         // zostaje wbudowany silnik Tekli jako wariant
                         // awaryjny, żeby program zawsze coś zrobił.
-                        if (!PlaceUsingFreeMode(rd, activeDrawing, scale, log))
+                        if (PlaceUsingFreeMode(rd, activeDrawing, scale, log))
+                        {
+                            result.MovedCount++;
+                        }
+                        else
                         {
                             log("  Jeden wymiar R nie został zmodyfikowany (Modify() zwróciło false).");
-                            continue;
                         }
-                    }
-                    else
-                    {
-                        leaderRays.Add(ray);
+                        continue;
                     }
 
-                    result.MovedCount++;
+                    plans.Add(plan);
                 }
                 catch (Exception ex)
                 {
                     log("  Pominięto jeden wymiar R – błąd: " + ex.Message);
+                }
+            }
+
+            AlignPlans(plans, log);
+
+            // Promienie linii odniesienia - potrzebne w ostatnim etapie, żeby
+            // wiedzieć, czego opisy mają nie zasłaniać.
+            var leaderRays = new List<LeaderRay>();
+
+            foreach (var plan in plans)
+            {
+                try
+                {
+                    leaderRays.Add(ApplyPlan(plan, log));
+                    result.MovedCount++;
+                }
+                catch (Exception ex)
+                {
+                    log("  Nie udało się zapisać jednego wymiaru R – błąd: " + ex.Message);
                 }
             }
 
@@ -301,31 +322,54 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
-        /// Ustawia JEDEN wymiar R, licząc wszystko WYŁĄCZNIE ze współrzędnych
-        /// z API Tekli - żadnych zrzutów ekranu, żadnego szukania po kroku.
-        /// Jedno wyliczenie, jedno Modify().
+        /// Policzone położenie JEDNEGO wymiaru R - jeszcze niezapisane.
         ///
-        /// Dane wejściowe (wszystko w jednostkach MODELU, ta sama przestrzeń
-        /// co Distance): ArcPoint1/2/3 -> środek i promień łuku
-        /// (circumcenter), bryła części z modelu -> rozmiar i liczba otworów.
+        /// Rozdzielenie „policz" od „zapisz" jest potrzebne, żeby przed
+        /// zapisem móc WYRÓWNAĆ wymiary idące w tę samą stronę (patrz
+        /// AlignPlans) - bez tego każdy wymiar lądowałby na własnej wysokości
+        /// i rysunek wyglądałby niechlujnie.
+        /// </summary>
+        private class PlacementPlan
+        {
+            public RadiusDimension Dimension;
+            public double Scale;
+
+            // Punkt na łuku, od którego biegnie linia odniesienia (model).
+            public double ArcX, ArcY;
+
+            // Kierunek linii odniesienia - jednostkowy (model).
+            public double DirX, DirY;
+
+            // Odległość tekstu od łuku w jednostkach MODELU, bez znaku.
+            public double DistanceModel;
+
+            // Czy tekst ma iść do wnętrza części.
+            public bool Inside;
+
+            // Rozmiar części - do wyliczenia długości sprawdzanego leadera.
+            public double FaceLongMm;
+        }
+
+        /// <summary>
+        /// Liczy położenie JEDNEGO wymiaru R, nic nie zapisując.
+        ///
+        /// Wszystko wyłącznie ze współrzędnych z API Tekli - żadnych zrzutów
+        /// ekranu, żadnego szukania po kroku. Wejście (w jednostkach MODELU):
+        /// ArcPoint1/2/3 -> środek i promień łuku (circumcenter), bryła części
+        /// z modelu -> rozmiar i liczba otworów, linie wymiarowe -> przeszkody.
         ///
         /// Zasada rozstawiania (ustalona z użytkownikiem):
-        /// - część większa niż MinPartSizeForInsideMm i BEZ otworów -> tekst
-        ///   zostaje wewnątrz części (jest tam pusto),
-        /// - część z otworem albo mniejsza -> tekst na zewnątrz.
+        /// - część BEZ otworów, dostatecznie szeroka, i droga do środka nie
+        ///   przecina innego wymiaru -> tekst zostaje wewnątrz części,
+        /// - w każdym innym przypadku -> tekst na zewnątrz, tuż za tym, dokąd
+        ///   sięgają linie wymiarowe opisujące element.
         ///
-        /// ZNAK Distance: ujemny = NA ZEWNĄTRZ (od środka łuku), dodatni = do
-        /// wnętrza części. Ustalone empirycznie - RadiusDimension nie
-        /// udostępnia swojej pozycji, więc konwencji nie da się odczytać z
-        /// API; kilkanaście niezależnych pomiarów na trzech różnych rysunkach
-        /// dało za każdym razem ten sam wynik. Jeśli kiedyś okaże się
-        /// odwrotnie, wystarczy odwrócić OutwardSign.
-        ///
-        /// Zwraca półprostą leadera (do odsuwania opisów) albo null, gdy
-        /// geometrii nie da się policzyć - wtedy wywołujący spada do
+        /// Zwraca null, gdy geometrii nie da się policzyć (zdegenerowany łuk,
+        /// brak danych z modelu) - wtedy wywołujący spada do
         /// PlaceUsingFreeMode.
         /// </summary>
-        private LeaderRay TryPlaceByGeometry(RadiusDimension rd, List<Segment> obstacles, double scale, Action<string> log)
+        private PlacementPlan ComputePlan(
+            RadiusDimension rd, List<Segment> obstacles, double scale, Action<string> log)
         {
             Tekla.Structures.Geometry3d.Point center;
             try
@@ -358,14 +402,6 @@ namespace RadiusDimensionMover
                 return null;
             }
 
-            // Tekst może zostać WEWNĄTRZ tylko gdy część nie ma żadnych
-            // otworów I w płaszczyźnie blachy jest wokół łuku realne miejsce.
-            //
-            // Miarą "jest miejsce" jest KRÓTSZY wymiar płaszczyzny w stosunku
-            // do promienia, a nie stały próg na największym wymiarze. Ten
-            // pierwotny wariant (>300mm na max wymiarze) wyrzucał na zewnątrz
-            // blachę 65,5 x 180,8 bez otworów, w której tekst spokojnie się
-            // mieścił - 180,8 nie przechodziło progu, choć miejsca było dość.
             bool roomInside = facts.FaceShortMm >= radius * InsideRoomRadiusFactor
                 && facts.FaceShortMm >= InsideMinShortFaceMm;
             bool insideAllowed = facts.HoleCount == 0 && roomInside;
@@ -374,24 +410,21 @@ namespace RadiusDimensionMover
                 + "mm, śruby: " + facts.BoltCount + ", wycięcia: " + facts.BooleanCount
                 + ", promień łuku " + radius.ToString("0") + "mm.");
 
-            // Zanim wpuścimy tekst do środka: sprawdź, czy droga tam nie
-            // przecina INNEGO WYMIARU. Same warunki rozmiarowe tego nie
-            // wyłapują - na blachy 66 x 181 tekst "R 13.50" lądował dokładnie
-            // na wymiarze długości "181", bo linia odniesienia biegnie z
-            // narożnika na skos przez część i wychodzi jej dolną krawędzią.
-            //
-            // To sprawdzenie jest ważniejsze niż progi rozmiarowe: działa
-            // niezależnie od tego, jak ustawiony jest InsideMinShortFaceMm.
+            // Zanim wpuścimy tekst do środka: czy droga tam nie przecina
+            // INNEGO WYMIARU? Same warunki rozmiarowe tego nie wyłapują - na
+            // blachy 66 x 181 tekst lądował dokładnie na wymiarze długości,
+            // bo linia odniesienia biegnie z narożnika na skos przez część i
+            // wychodzi jej dolną krawędzią.
             if (insideAllowed)
             {
-                double insideProbe = facts.FaceShortMm * InsideFraction;
                 var insideRay = new LeaderRay
                 {
                     OriginX = center.X - dirX * radius,
                     OriginY = center.Y - dirY * radius,
                     DirX = -dirX,
                     DirY = -dirY,
-                    Length = insideProbe + facts.FaceLongMm * LeaderCheckLengthFactor
+                    Length = facts.FaceShortMm * InsideFraction
+                             + facts.FaceLongMm * LeaderCheckLengthFactor
                 };
 
                 if (CrossesAnySegment(insideRay, obstacles))
@@ -401,75 +434,205 @@ namespace RadiusDimensionMover
                 }
             }
 
-            double distance;
+            double distanceModel;
             if (insideAllowed)
             {
-                // Do wnętrza dużej, pustej części - na tyle głęboko, żeby
-                // tekst nie siedział na samej krawędzi.
-                distance = -OutwardSign * facts.FaceShortMm * InsideFraction;
-                log("  -> tekst WEWNĄTRZ części (Distance=" + distance.ToString("0") + ").");
+                distanceModel = facts.FaceShortMm * InsideFraction;
+                log("  -> tekst WEWNĄTRZ części.");
             }
             else
             {
-                // Na zewnątrz - odległość jako ułamek rozmiaru części.
-                //
-                // Dlaczego NIE liczymy tego z StraightDimensionSet.Distance,
-                // choć taka wartość jest w API: nie jest w tej samej skali co
-                // RadiusDimension.Distance. Na blachy 175mm łańcuchy raportują
-                // Distance 25-120, a wstawienie 120 wyrzuciło tekst poza
-                // arkusz, podczas gdy ~15-25 ląduje tuż za opisem. Ponieważ
-                // RadiusDimension NIE udostępnia swojej pozycji przez API,
-                // nie ma czym tego przeliczyć. Rozmiar części z modelu jest
-                // stabilną i wystarczającą podstawą.
+                // Na zewnątrz: tuż ZA najdalszą linią wymiarową leżącą w tym
+                // kierunku. Liczone z rzeczywistych współrzędnych linii, nie z
+                // rozmiaru części - to dwie różne rzeczy.
                 double reachModel = OutermostDimensionReach(
                     center.X + dirX * radius, center.Y + dirY * radius,
                     dirX, dirY,
                     facts.FaceShortMm * OutsideCorridorFraction,
                     obstacles);
 
-                double outsidePaper = reachModel > 0
-                    ? reachModel / scale + OutsideClearancePaperMm
-                    : OutsideFallbackPaperMm;
+                distanceModel = reachModel > 0
+                    ? reachModel + OutsideClearancePaperMm * scale
+                    : OutsideFallbackPaperMm * scale;
 
-                distance = OutwardSign * outsidePaper * scale;
                 log("  -> tekst NA ZEWNĄTRZ: linie wymiarowe sięgają "
                     + (reachModel > 0 ? reachModel.ToString("0") + "mm" : "(brak w tym kierunku)")
                     + ", prześwit " + OutsideClearancePaperMm.ToString("0") + "mm na papierze.");
             }
 
-            // WAŻNE - jednostki: Distance jest w mm NA PAPIERZE, a nie w
-            // jednostkach modelu (jak ArcPoint1/2/3). Powyżej policzyliśmy
-            // odległość w modelu, więc trzeba ją podzielić przez skalę widoku.
-            //
-            // Bez tego wszystko było systematycznie przestrzelone o skalę: na
-            // rysunku 1:5 przy Distance=49 tekst lądował ~200mm od łuku, a przy
-            // Distance=23 ~100mm - za każdym razem około 5x za daleko. Właśnie
-            // dlatego "umieszczanie wewnątrz" nigdy nie trafiało w środek
-            // części, tylko przelatywało na drugą stronę.
-            double paperDistance = distance / scale;
+            // Kierunek zapisany w planie to kierunek, w którym FAKTYCZNIE
+            // pójdzie tekst - dla wariantu wewnętrznego przeciwny do "na
+            // zewnątrz".
+            double sign = insideAllowed ? -1.0 : 1.0;
 
-            var attrs = rd.Attributes;
+            return new PlacementPlan
+            {
+                Dimension = rd,
+                Scale = scale,
+                ArcX = center.X + dirX * radius * sign,
+                ArcY = center.Y + dirY * radius * sign,
+                DirX = dirX * sign,
+                DirY = dirY * sign,
+                DistanceModel = distanceModel,
+                Inside = insideAllowed,
+                FaceLongMm = facts.FaceLongMm
+            };
+        }
+
+        /// <summary>
+        /// WYRÓWNUJE wymiary idące w tę samą stronę, żeby ich teksty leżały w
+        /// jednej linii - bez tego dwa wymiary wyrzucone „do góry" lądują na
+        /// różnych wysokościach i rysunek wygląda niechlujnie.
+        ///
+        /// Jak to działa:
+        /// 1. Plany są grupowane po **dominującym kierunku** tekstu (góra,
+        ///    dół, lewo, prawo) - bierzemy większą składową wektora kierunku.
+        /// 2. W grupie „góra"/„dół" wyrównujemy współrzędną **Y** tekstów, w
+        ///    grupie „lewo"/„prawo" współrzędną **X**.
+        /// 3. Docelową wartością jest ta NAJDALSZA w grupie, więc żaden wymiar
+        ///    nie zostaje przyciągnięty bliżej, niż wynikało z jego własnego
+        ///    wyliczenia. To ważne: każda odległość została policzona tak, żeby
+        ///    ominąć przeszkody w swoim kierunku, a skracanie mogłoby ją
+        ///    wepchnąć z powrotem na linię wymiarową.
+        ///
+        /// Pozycja tekstu jest przybliżana jako `łuk + kierunek × odległość` -
+        /// API nie podaje jej wprost, ale do wyrównania między sobą to
+        /// wystarcza, bo błąd modelu jest dla wszystkich wymiarów ten sam.
+        ///
+        /// Wymiary umieszczone WEWNĄTRZ części są pomijane - tam nie chodzi o
+        /// równy szereg, a o zmieszczenie się w obrysie.
+        /// </summary>
+        private static void AlignPlans(List<PlacementPlan> plans, Action<string> log)
+        {
+            // Klucz grupy: 'G'/'D' dla pionu, 'L'/'P' dla poziomu.
+            var groups = new Dictionary<char, List<PlacementPlan>>();
+
+            foreach (var p in plans)
+            {
+                if (p.Inside)
+                {
+                    continue;
+                }
+
+                bool vertical = Math.Abs(p.DirY) >= Math.Abs(p.DirX);
+                char key = vertical
+                    ? (p.DirY > 0 ? 'G' : 'D')
+                    : (p.DirX > 0 ? 'P' : 'L');
+
+                if (!groups.TryGetValue(key, out var list))
+                {
+                    list = new List<PlacementPlan>();
+                    groups[key] = list;
+                }
+                list.Add(p);
+            }
+
+            foreach (var kv in groups)
+            {
+                var group = kv.Value;
+                if (group.Count < 2)
+                {
+                    continue;   // nie ma z czym wyrównywać
+                }
+
+                bool vertical = kv.Key == 'G' || kv.Key == 'D';
+
+                // Docelowa współrzędna = najdalsza w grupie.
+                double target = 0;
+                bool first = true;
+                foreach (var p in group)
+                {
+                    double coord = vertical
+                        ? p.ArcY + p.DirY * p.DistanceModel
+                        : p.ArcX + p.DirX * p.DistanceModel;
+
+                    // "Najdalsza" znaczy najdalej w kierunku grupy, więc dla
+                    // kierunków ujemnych to najmniejsza wartość.
+                    bool farther = first
+                        || (vertical
+                            ? (kv.Key == 'G' ? coord > target : coord < target)
+                            : (kv.Key == 'P' ? coord > target : coord < target));
+
+                    if (farther)
+                    {
+                        target = coord;
+                        first = false;
+                    }
+                }
+
+                int aligned = 0;
+                foreach (var p in group)
+                {
+                    double component = vertical ? p.DirY : p.DirX;
+                    if (Math.Abs(component) < 1e-6)
+                    {
+                        continue;   // kierunek prostopadły - nie da się wyrównać
+                    }
+
+                    double origin = vertical ? p.ArcY : p.ArcX;
+                    double needed = (target - origin) / component;
+
+                    // Nigdy nie skracamy - patrz opis metody.
+                    if (needed > p.DistanceModel)
+                    {
+                        p.DistanceModel = needed;
+                        aligned++;
+                    }
+                }
+
+                if (aligned > 0)
+                {
+                    log("  Wyrównano " + group.Count + " wymiar(y) idące w stronę "
+                        + DirectionName(kv.Key) + " do jednej linii.");
+                }
+            }
+        }
+
+        private static string DirectionName(char key)
+        {
+            switch (key)
+            {
+                case 'G': return "góry";
+                case 'D': return "dołu";
+                case 'L': return "lewej";
+                default: return "prawej";
+            }
+        }
+
+        /// <summary>
+        /// Zapisuje policzony plan do Tekli i zwraca półprostą linii
+        /// odniesienia (do późniejszego odsuwania opisów).
+        ///
+        /// WAŻNE - jednostki: Distance jest w mm NA PAPIERZE, a plan trzyma
+        /// odległość w jednostkach MODELU (jak ArcPoint1/2/3), więc tu jest
+        /// dzielenie przez skalę widoku. Pomyłka daje błąd równy skali rysunku
+        /// i była przyczyną większości problemów w historii tego projektu.
+        ///
+        /// Tryb Fixed, nie Free - tylko wtedy nasza wartość jest respektowana.
+        /// </summary>
+        private static LeaderRay ApplyPlan(PlacementPlan p, Action<string> log)
+        {
+            double paperDistance = OutwardSign * (p.Inside ? -1.0 : 1.0) * p.DistanceModel / p.Scale;
+
+            var attrs = p.Dimension.Attributes;
             attrs.Placing = new DimensionSetBaseAttributes.DimensionPlacingAttributes(
                 DimensionSetBaseAttributes.Placings.Fixed,
                 new PlacingDirectionAttributes(true, true),
                 new PlacingDistanceAttributes(2.0, Math.Abs(paperDistance)));
-            rd.Attributes = attrs;
-            rd.Distance = paperDistance;
-            rd.Modify();
+            p.Dimension.Attributes = attrs;
+            p.Dimension.Distance = paperDistance;
+            p.Dimension.Modify();
 
-            log("     (Distance na papierze = " + paperDistance.ToString("0.#") + " przy skali " + scale.ToString("0.#") + ")");
+            log("     (Distance na papierze = " + paperDistance.ToString("0.#")
+                + " przy skali " + p.Scale.ToString("0.#") + ")");
 
-            // Leader biegnie od łuku w stronę tekstu. Dokładnej długości nie
-            // znamy (API nie podaje pozycji tekstu), więc bierzemy z zapasem -
-            // chodzi tylko o to, żeby opisy nie leżały na tej linii.
-            double sign = insideAllowed ? -1.0 : 1.0;
             return new LeaderRay
             {
-                OriginX = center.X + dirX * radius * sign,
-                OriginY = center.Y + dirY * radius * sign,
-                DirX = dirX * sign,
-                DirY = dirY * sign,
-                Length = Math.Abs(distance) + facts.FaceLongMm * LeaderCheckLengthFactor
+                OriginX = p.ArcX,
+                OriginY = p.ArcY,
+                DirX = p.DirX,
+                DirY = p.DirY,
+                Length = p.DistanceModel + p.FaceLongMm * LeaderCheckLengthFactor
             };
         }
 
