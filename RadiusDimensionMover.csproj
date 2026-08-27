@@ -10,6 +10,14 @@
     <Nullable>disable</Nullable>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
+
+    <!--
+      WERSJA - musi być zgodna z MyAppVersion w installer/setup.iss oraz z
+      tagiem release na GitHubie. Program czyta ją z własnego assembly i
+      porównuje z najnowszym tagiem przez API GitHuba (patrz UpdateCheck.cs),
+      więc rozjazd tutaj = błędne powiadomienie o aktualizacji.
+    -->
+    <Version>1.3.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

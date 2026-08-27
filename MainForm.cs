@@ -60,6 +60,13 @@ namespace RadiusDimensionMover
         private TextBox _logBox;
         private Label _statusLabel;
 
+        // Pasek z informacją o nowszej wersji. Tworzony zawsze, ale UKRYTY -
+        // pokazuje się tylko wtedy, gdy sprawdzenie na GitHubie znajdzie
+        // nowszą wersję (patrz UpdateCheck). Gdy wszystko aktualne albo nie ma
+        // internetu, użytkownik nie widzi nic.
+        private LinkLabel _updateBanner;
+        private const int UpdateBannerHeight = 28;
+
         /// <summary>
         /// Buduje UI w kodzie (bez designera - jeden przycisk nie potrzebuje
         /// pliku .Designer.cs), podpina zdarzenia i próbuje połączyć się z
@@ -108,6 +115,32 @@ namespace RadiusDimensionMover
                 Font = new Font("Consolas", 9)
             };
 
+            // Pasek aktualizacji siedzi NAD przyciskiem, ale dopóki jest
+            // ukryty, nie zajmuje miejsca - pozostałe kontrolki są przesuwane
+            // w dół dopiero w ShowUpdateBanner().
+            _updateBanner = new LinkLabel
+            {
+                Left = 15,
+                Top = 12,
+                Width = 470,
+                Height = 20,
+                Visible = false,
+                LinkColor = Color.FromArgb(0, 102, 204),
+                Font = new Font(Font, FontStyle.Bold)
+            };
+            _updateBanner.LinkClicked += (s2, e2) =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(UpdateCheck.ReleasesPage);
+                }
+                catch (Exception ex)
+                {
+                    Log("Nie udało się otworzyć strony z wydaniami: " + ex.Message);
+                }
+            };
+
+            Controls.Add(_updateBanner);
             Controls.Add(_runButton);
             Controls.Add(_statusLabel);
             Controls.Add(_logBox);
@@ -132,6 +165,34 @@ namespace RadiusDimensionMover
                 : "UWAGA: nie udało się utworzyć pliku logu - log dostępny tylko w tym oknie.");
 
             TryConnectAndWatch();
+
+            // Sprawdzenie aktualizacji - w tle, nie blokuje startu, i milczy
+            // gdy wszystko jest aktualne.
+            UpdateCheck.StartInBackground(
+                version => UiInvoke(() => ShowUpdateBanner(version)),
+                message => UiInvoke(() => Log(message)));
+        }
+
+        /// <summary>
+        /// Pokazuje pasek z informacją o nowszej wersji i robi na niego miejsce,
+        /// przesuwając pozostałe kontrolki w dół. Wołane TYLKO gdy nowsza wersja
+        /// faktycznie istnieje, więc w normalnej sytuacji okno wygląda jak
+        /// dotąd.
+        /// </summary>
+        private void ShowUpdateBanner(string version)
+        {
+            if (_updateBanner.Visible)
+            {
+                return;   // już pokazany
+            }
+
+            _updateBanner.Text = "Dostępna nowsza wersja " + version + " - kliknij, aby pobrać";
+            _updateBanner.Visible = true;
+
+            _runButton.Top += UpdateBannerHeight;
+            _statusLabel.Top += UpdateBannerHeight;
+            _logBox.Top += UpdateBannerHeight;
+            Height += UpdateBannerHeight;
         }
 
         /// <summary>
