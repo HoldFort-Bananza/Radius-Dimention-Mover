@@ -11,6 +11,27 @@ namespace RadiusDimensionMover
         public int MovedCount;
     }
 
+    /// <summary>
+    /// Cała logika rozstawiania wymiarów promieni. Nie zna UI - komunikuje się
+    /// przez Action&lt;string&gt; (log) i zwracany MoveResult.
+    ///
+    /// Działa WYŁĄCZNIE na danych z Tekla Open API: współrzędnych łuku,
+    /// bryle części z modelu i geometrii linii wymiarowych. Nie robi zrzutów
+    /// ekranu i nie analizuje pikseli (wcześniejsza wersja to robiła - została
+    /// usunięta).
+    ///
+    /// ⚠️ NAJWAŻNIEJSZA PUŁAPKA - JEDNOSTKI:
+    ///   ArcPoint1/2/3, bryła części, punkty linii wymiarowych -> MODEL
+    ///   RadiusDimension.Distance                              -> PAPIER
+    /// Dwie różne jednostki w tej samej klasie. Liczymy w modelu i dzielimy
+    /// przez skalę widoku przed zapisem. Pomyłka daje błąd równy skali rysunku
+    /// (na 1:5 pięciokrotny) i była przyczyną większości problemów w historii
+    /// tego projektu.
+    ///
+    /// Zanim zmienisz sposób rozstawiania, przeczytaj listę ślepych uliczek -
+    /// dziewięć podejść zostało już przetestowanych i odrzuconych, z pomiarami:
+    /// https://github.com/HoldFort-Bananza/Radius-Dimention-Mover/wiki/4-Slepe-uliczki
+    /// </summary>
     public class RadiusDimensionService
     {
         // --- Parametry wyszukiwania wolnego miejsca dla trybu AWARYJNEGO
@@ -784,6 +805,12 @@ namespace RadiusDimensionMover
             return maxAlong;
         }
 
+        /// <summary>
+        /// Czy dwa odcinki się przecinają - klasyczny test przez znaki
+        /// iloczynów wektorowych. Przypadki zdegenerowane (współliniowość,
+        /// styk końcami) celowo traktowane jako BRAK przecięcia: styk nie
+        /// przeszkadza, a nadwrażliwość odrzucałaby dobre pozycje.
+        /// </summary>
         private static bool SegmentsIntersect(
             double ax, double ay, double bx, double by,
             double cx, double cy, double dx, double dy)
@@ -804,6 +831,11 @@ namespace RadiusDimensionMover
             return (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
         }
 
+        /// <summary>
+        /// Najkrótsza odległość punktu od ODCINKA (nie od prostej) - rzut jest
+        /// przycinany do [0,1], więc dla punktów „za końcem" zwraca odległość
+        /// od tego końca.
+        /// </summary>
         private static double PointSegmentDistance(
             double px, double py, double x1, double y1, double x2, double y2)
         {
@@ -919,6 +951,10 @@ namespace RadiusDimensionMover
             return segments;
         }
 
+        /// <summary>
+        /// Odległość w płaszczyźnie XY - Z celowo pomijane, bo pracujemy w
+        /// płaskim układzie widoku rysunku.
+        /// </summary>
         private static double Distance2D(Tekla.Structures.Geometry3d.Point a, Tekla.Structures.Geometry3d.Point b)
         {
             double dx = a.X - b.X;
@@ -1039,6 +1075,12 @@ namespace RadiusDimensionMover
             public int HoleCount => BoltCount + BooleanCount;
         }
 
+        /// <summary>
+        /// Środek okręgu przechodzącego przez trzy punkty (circumcenter).
+        /// Stąd bierzemy środek i promień łuku wymiaru - sprawdzone na żywym
+        /// rysunku: dla wymiaru opisanego jako R20 wychodzi dokładnie 20,000.
+        /// Rzuca wyjątkiem dla punktów współliniowych (wyznacznik ~0).
+        /// </summary>
         private static Tekla.Structures.Geometry3d.Point CircumCenter(
             Tekla.Structures.Geometry3d.Point p1, Tekla.Structures.Geometry3d.Point p2, Tekla.Structures.Geometry3d.Point p3)
         {

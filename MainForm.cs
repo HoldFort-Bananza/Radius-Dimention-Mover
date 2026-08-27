@@ -6,6 +6,18 @@ using Tekla.Structures.Drawing;
 
 namespace RadiusDimensionMover
 {
+    /// <summary>
+    /// Całe UI: jeden przycisk, podpis ze stanem i okno logu. Nie zawiera
+    /// ŻADNEJ logiki rozstawiania - ta siedzi w RadiusDimensionService.
+    /// Komunikacja z serwisem odbywa się tylko przez Action&lt;string&gt; (log)
+    /// i zwracany MoveResult.
+    ///
+    /// Zadania tej klasy: połączyć się z Teklą, nasłuchiwać jej zdarzeń
+    /// (zmiana rysunku), wołać serwis po kliknięciu i zapisywać log do pliku.
+    ///
+    /// Pełny opis projektu:
+    /// https://github.com/HoldFort-Bananza/Radius-Dimention-Mover/wiki
+    /// </summary>
     public class MainForm : Form
     {
         private readonly RadiusDimensionService _service = new RadiusDimensionService();
@@ -45,10 +57,14 @@ namespace RadiusDimensionMover
         private readonly string _logFilePath;
 
         private Button _runButton;
-        private Button _undoButton;
         private TextBox _logBox;
         private Label _statusLabel;
 
+        /// <summary>
+        /// Buduje UI w kodzie (bez designera - jeden przycisk nie potrzebuje
+        /// pliku .Designer.cs), podpina zdarzenia i próbuje połączyć się z
+        /// Teklą. Rozmiary kontrolek są wpisane wprost, bo okno jest stałe.
+        /// </summary>
         public MainForm()
         {
             _logFilePath = InitLogFile();
@@ -159,6 +175,14 @@ namespace RadiusDimensionMover
             RefreshState();
         }
 
+        /// <summary>
+        /// Podpina się do zdarzeń Tekli. `DrawingLoaded` to najważniejsze z
+        /// nich - odpala się przy wejściu na inny rysunek, dzięki czemu podpis
+        /// pod przyciskiem jest zawsze aktualny bez odpytywania Tekli w kółko.
+        ///
+        /// Gdyby rejestracja się nie udała, program nadal działa - stan
+        /// odświeży się przy powrocie fokusu na okno.
+        /// </summary>
         private void RegisterTeklaEvents()
         {
             try
@@ -186,6 +210,12 @@ namespace RadiusDimensionMover
             }
         }
 
+        /// <summary>
+        /// Zdejmuje rejestracje zdarzeń. WAŻNE przy utracie połączenia: stare
+        /// rejestracje wskazują na nieistniejący już proces Tekli i po jej
+        /// ponownym uruchomieniu program nie dostałby ŻADNEGO zdarzenia,
+        /// dopóki się nie zrestartuje.
+        /// </summary>
         private void UnregisterTeklaEvents()
         {
             try { if (_drawingEvents != null) { _drawingEvents.UnRegister(); } } catch { }
@@ -205,6 +235,12 @@ namespace RadiusDimensionMover
             _connectRetryTimer?.Start();
         });
 
+        /// <summary>
+        /// Przenosi wykonanie na wątek UI. Zdarzenia Tekli przychodzą z JEJ
+        /// wątku, więc ruszanie kontrolkami wprost z nich rzuciłoby wyjątkiem.
+        /// Wyjątki są tu tłumione świadomie - okno mogło już zniknąć, a to nie
+        /// powód, żeby przerywać działanie programu.
+        /// </summary>
         private void UiInvoke(Action action)
         {
             try
@@ -254,6 +290,13 @@ namespace RadiusDimensionMover
             }
         }
 
+        /// <summary>
+        /// Jedyna akcja programu: przekazuje robotę serwisowi i wypisuje log.
+        /// `_busy` chroni tylko przed uruchomieniem drugiej operacji w trakcie
+        /// pierwszej - po zakończeniu przycisk wraca do stanu aktywnego, bo
+        /// ponowne przesunięcie jest nieszkodliwe (liczone od nowa z tych
+        /// samych danych).
+        /// </summary>
         private void RunButton_Click(object sender, EventArgs e)
         {
             if (_busy)
@@ -306,6 +349,11 @@ namespace RadiusDimensionMover
             }
         }
 
+        /// <summary>
+        /// Dopisuje wiersz do okna logu i do pliku sesji. Błąd zapisu do pliku
+        /// jest ignorowany - log to wygoda przy diagnozowaniu, nie funkcja
+        /// krytyczna, i nie może wywalić programu.
+        /// </summary>
         private void Log(string message)
         {
             _logBox.AppendText(message + Environment.NewLine);
