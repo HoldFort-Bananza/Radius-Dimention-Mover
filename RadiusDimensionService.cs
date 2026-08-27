@@ -77,13 +77,19 @@ namespace RadiusDimensionMover
         // Dodatkowy, BEZWZGLĘDNY próg na krótszy wymiar płaszczyzny - zgrubny
         // filtr "czy blacha jest dość szeroka, żeby tekst miał gdzie usiąść".
         //
-        // 60mm = wartość wybrana przez użytkownika. Historycznie próg musiał
-        // być znacznie wyższy (120mm), bo Distance było zapisywane w złych
-        // jednostkach i tekst przelatywał na drugą stronę części. Po poprawce
-        // jednostek to już nie jest ta linia obrony - właściwym
-        // zabezpieczeniem jest sprawdzenie, czy droga do środka nie przecina
-        // innego wymiaru (patrz TryPlaceByGeometry).
-        private const double InsideMinShortFaceMm = 60.0;
+        // 120mm = próg ZMIERZONY na żywych rysunkach, nie wybrany na wyczucie:
+        //   141mm ([31571] 141x538) - tekst w środku wygląda dobrze,
+        //   100mm ([31202] 100x200) - "ledwo co się mieści" (ocena operatora).
+        // Próg musi więc leżeć między 100 a 141; 120 to najbliższa okrągła
+        // wartość, która odrzuca pierwsze i przepuszcza drugie.
+        //
+        // Historia tej stałej jest myląca i warto ją znać: było 120, potem na
+        // życzenie 60, teraz znowu 120. Obniżenie do 60 wyszło z założenia, że
+        // po naprawieniu jednostek Distance właściwą linią obrony jest test
+        // przecięcia drogi do środka (patrz TryPlaceByGeometry). Okazało się
+        // niepełne - ten test wyłapuje tylko kolizję z INNYM WYMIAREM, a nie
+        // to, że tekst fizycznie nie ma gdzie usiąść w wąskiej blasze.
+        private const double InsideMinShortFaceMm = 120.0;
 
         // Jak głęboko w część wchodzi tekst, gdy wolno mu tam zostać -
         // ułamek KRÓTSZEGO wymiaru płaszczyzny, żeby tekst nie wyszedł
@@ -98,7 +104,14 @@ namespace RadiusDimensionMover
         // daleko trzeba odejść, zależy od tego, dokąd sięga opis elementu, a
         // nie od tego, jak duża jest blacha. Ułamek rozmiaru dawał na blachy
         // 175mm 3,5mm na papierze - tekst siedział na konturze i na wymiarach.
-        private const double OutsideClearancePaperMm = 8.0;
+        //
+        // 14mm, nie 8mm, i to nie na wyczucie. Prześwit jest mierzony WZDŁUŻ
+        // promienia linii odniesienia, a ten dla zaokrąglonego narożnika
+        // biegnie pod 45 stopni. Prostopadle do linii wymiarowej zostaje więc
+        // tylko 8 * cos(45) ~ 5,7mm - mniej niż wysokość tekstu, i tekst
+        // nachodził na linię (zgłoszone na [31202], gdzie cztery R8 stały na
+        // 23,4mm i dotykały łańcucha wymiarowego).
+        private const double OutsideClearancePaperMm = 14.0;
 
         // Gdy w kierunku "na zewnątrz" nie ma żadnej linii wymiarowej - o tyle
         // (mm na papierze) odsuwamy tekst od łuku.
