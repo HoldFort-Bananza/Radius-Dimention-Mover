@@ -24,10 +24,15 @@ namespace RadiusDimensionMover
         // komentarz w PlaceUsingFreeMode).
         private const double ResetDistanceMm = 4.0;
 
-        // --- Rozstawianie wymiarów R: WYŁĄCZNIE ze współrzędnych z API
-        // (ArcPoint1/2/3, bryła części, StraightDimensionSet.Distance).
-        // Wszystko w jednostkach MODELU, tak jak Distance. Żadnych zrzutów
-        // ekranu ani analizy pikseli - patrz TryPlaceByGeometry(). ---
+        // --- Rozstawianie wymiarów R: WYŁĄCZNIE ze współrzędnych z API.
+        // Żadnych zrzutów ekranu ani analizy pikseli - patrz
+        // TryPlaceByGeometry().
+        //
+        // UWAGA NA JEDNOSTKI - to najczęstsze źródło błędów w tym projekcie:
+        //   ArcPoint1/2/3, bryła części, punkty linii wymiarowych  -> MODEL
+        //   RadiusDimension.Distance                               -> PAPIER
+        // Czyli DWIE różne jednostki w tej samej klasie. Liczymy w modelu, a
+        // przed zapisem dzielimy przez skalę widoku (patrz paperDistance).
 
         // Znak Distance oznaczający kierunek NA ZEWNĄTRZ (od środka łuku).
         // Ustalone empirycznie: RadiusDimension nie udostępnia swojej
@@ -48,23 +53,15 @@ namespace RadiusDimensionMover
         // tekst ma się gdzie zmieścić - mówi o tym krótszy wymiar płaszczyzny.
         private const double InsideRoomRadiusFactor = 3.0;
 
-        // Dodatkowy, BEZWZGLĘDNY próg na krótszy wymiar płaszczyzny.
+        // Dodatkowy, BEZWZGLĘDNY próg na krótszy wymiar płaszczyzny - zgrubny
+        // filtr "czy blacha jest dość szeroka, żeby tekst miał gdzie usiąść".
         //
-        // Konieczny, bo API nie podaje pozycji tekstu wymiaru: przy
-        // Distance=23 tekst odjechał ~100mm od łuku. Na blachy 66 x 181 bez
-        // otworów oba wymiary R przeleciały więc na skos przez materiał i
-        // wylądowały POD blachą, na sobie i na wymiarze długości. Do środka
-        // wchodzimy tylko wtedy, gdy blacha jest szeroka na tyle, że takie
-        // przestrzelenie nie wyprowadza tekstu poza obrys.
-        // 60mm = wartość wybrana przez użytkownika (świadomie, po zobaczeniu
-        // wyniku). Przy niej do środka wchodzą też wąskie blachy.
-        //
-        // Znany skutek: na blachy 66 x 181 bez otworów oba wymiary R
-        // przelatują na skos przez materiał i lądują POD blachą, jeden na
-        // drugim i na wymiarze długości. Przyczyna nie jest w tej stałej -
-        // Distance nie przekłada się wprost na odległość tekstu (przy
-        // Distance=23 tekst odjechał ~100mm). 120mm to wartość, przy której
-        // takie przestrzelenie zostaje w obrysie.
+        // 60mm = wartość wybrana przez użytkownika. Historycznie próg musiał
+        // być znacznie wyższy (120mm), bo Distance było zapisywane w złych
+        // jednostkach i tekst przelatywał na drugą stronę części. Po poprawce
+        // jednostek to już nie jest ta linia obrony - właściwym
+        // zabezpieczeniem jest sprawdzenie, czy droga do środka nie przecina
+        // innego wymiaru (patrz TryPlaceByGeometry).
         private const double InsideMinShortFaceMm = 60.0;
 
         // Jak głęboko w część wchodzi tekst, gdy wolno mu tam zostać -
@@ -72,21 +69,29 @@ namespace RadiusDimensionMover
         // obrysem po przeciwnej stronie.
         private const double InsideFraction = 0.35;
 
-        // Jak daleko na zewnątrz od łuku ląduje tekst - ułamek największego
-        // wymiaru części. Wartość dobrana z rzeczywistych rysunków: na blachy
-        // 175mm daje ~18mm, czyli tuż za opisem elementu.
-        private const double OutsideFraction = 0.10;
+        // Prześwit ZA najdalszą linią wymiarową, gdy tekst idzie na zewnątrz -
+        // w mm NA PAPIERZE, bo o czytelność na papierze tu chodzi i taką
+        // jednostkę przyjmuje Distance.
+        //
+        // Odległość na zewnątrz NIE jest ułamkiem rozmiaru części: to, jak
+        // daleko trzeba odejść, zależy od tego, dokąd sięga opis elementu, a
+        // nie od tego, jak duża jest blacha. Ułamek rozmiaru dawał na blachy
+        // 175mm 3,5mm na papierze - tekst siedział na konturze i na wymiarach.
+        private const double OutsideClearancePaperMm = 8.0;
+
+        // Gdy w kierunku "na zewnątrz" nie ma żadnej linii wymiarowej - o tyle
+        // (mm na papierze) odsuwamy tekst od łuku.
+        private const double OutsideFallbackPaperMm = 10.0;
+
+        // Szerokość korytarza (ułamek krótszego wymiaru płaszczyzny), w którym
+        // szukamy linii wymiarowych na drodze "na zewnątrz".
+        private const double OutsideCorridorFraction = 0.5;
 
         // Jak długi odcinek linii odniesienia sprawdzamy pod kątem kolizji z
         // opisami - jako wielokrotność rozmiaru części, DODANA do Distance.
-        //
-        // Musi być hojne, bo API nie podaje pozycji tekstu wymiaru, a tekst
-        // ląduje znacznie dalej, niż sugeruje samo Distance: na blachy 175mm
-        // przy Distance=17 opis "1*Ø13" stykający się z tekstem wymiaru leżał
-        // ~140mm wzdłuż promienia. Zbyt krótki zasięg powodował, że program w
-        // ogóle nie widział kolizji. Przeszacowanie jest tu tanie: opis leżący
-        // dalej i tak zostanie odsunięty tylko w bok i tylko o brakującą
-        // różnicę, więc zostaje przy swoim otworze.
+        // Hojnie, bo API nie podaje pozycji tekstu wymiaru, a przeszacowanie
+        // jest tu tanie: opis leżący dalej i tak zostanie odsunięty tylko w
+        // bok i tylko o brakującą różnicę, więc zostaje przy swoim otworze.
         private const double LeaderCheckLengthFactor = 1.5;
 
         // Minimalny prześwit między opisem (Mark) a linią odniesienia wymiaru
@@ -130,11 +135,11 @@ namespace RadiusDimensionMover
         /// żywym rysunku (dwa wymiary R, oba wylądowały w czystych,
         /// nienachodzących na siebie ani na inne elementy miejscach).
         ///
-        /// WAŻNE - jednostki: PlacingDistanceAttributes (SearchMargin,
-        /// MinimalDistance, MaximalDistance) są w jednostkach MODELU, tak
-        /// samo jak zwykłe Distance - trzeba dzielić przez skalę widoku,
-        /// inaczej (potwierdzone empirycznie) wymiar wyleci daleko poza
-        /// widok przy widoku w powiększonej skali.
+        /// WAŻNE - jednostki: Distance jest w mm NA PAPIERZE, mimo że
+        /// ArcPoint1/2/3 w tej samej klasie są w jednostkach MODELU. Liczymy
+        /// w modelu i dzielimy przez skalę widoku przed zapisem. Pomyłka tutaj
+        /// daje błąd równy skali rysunku (na 1:5 pięciokrotny) i objawia się
+        /// tekstem lądującym po drugiej stronie części.
         /// </summary>
         public MoveResult AutoPlaceWithCollisionAvoidance(Action<string> log)
         {
@@ -227,7 +232,7 @@ namespace RadiusDimensionMover
                 {
                     double scale = GetViewScale(rd, scaleCache, log);
 
-                    var ray = TryPlaceByGeometry(rd, obstacles, log);
+                    var ray = TryPlaceByGeometry(rd, obstacles, scale, log);
                     if (ray == null)
                     {
                         // Geometria się nie udała (np. zdegenerowany łuk) -
@@ -299,7 +304,7 @@ namespace RadiusDimensionMover
         /// geometrii nie da się policzyć - wtedy wywołujący spada do
         /// PlaceUsingFreeMode.
         /// </summary>
-        private LeaderRay TryPlaceByGeometry(RadiusDimension rd, List<Segment> obstacles, Action<string> log)
+        private LeaderRay TryPlaceByGeometry(RadiusDimension rd, List<Segment> obstacles, double scale, Action<string> log)
         {
             Tekla.Structures.Geometry3d.Point center;
             try
@@ -395,18 +400,43 @@ namespace RadiusDimensionMover
                 // RadiusDimension NIE udostępnia swojej pozycji przez API,
                 // nie ma czym tego przeliczyć. Rozmiar części z modelu jest
                 // stabilną i wystarczającą podstawą.
-                distance = OutwardSign * facts.FaceLongMm * OutsideFraction;
-                log("  -> tekst NA ZEWNĄTRZ (Distance=" + distance.ToString("0") + ").");
+                double reachModel = OutermostDimensionReach(
+                    center.X + dirX * radius, center.Y + dirY * radius,
+                    dirX, dirY,
+                    facts.FaceShortMm * OutsideCorridorFraction,
+                    obstacles);
+
+                double outsidePaper = reachModel > 0
+                    ? reachModel / scale + OutsideClearancePaperMm
+                    : OutsideFallbackPaperMm;
+
+                distance = OutwardSign * outsidePaper * scale;
+                log("  -> tekst NA ZEWNĄTRZ: linie wymiarowe sięgają "
+                    + (reachModel > 0 ? reachModel.ToString("0") + "mm" : "(brak w tym kierunku)")
+                    + ", prześwit " + OutsideClearancePaperMm.ToString("0") + "mm na papierze.");
             }
+
+            // WAŻNE - jednostki: Distance jest w mm NA PAPIERZE, a nie w
+            // jednostkach modelu (jak ArcPoint1/2/3). Powyżej policzyliśmy
+            // odległość w modelu, więc trzeba ją podzielić przez skalę widoku.
+            //
+            // Bez tego wszystko było systematycznie przestrzelone o skalę: na
+            // rysunku 1:5 przy Distance=49 tekst lądował ~200mm od łuku, a przy
+            // Distance=23 ~100mm - za każdym razem około 5x za daleko. Właśnie
+            // dlatego "umieszczanie wewnątrz" nigdy nie trafiało w środek
+            // części, tylko przelatywało na drugą stronę.
+            double paperDistance = distance / scale;
 
             var attrs = rd.Attributes;
             attrs.Placing = new DimensionSetBaseAttributes.DimensionPlacingAttributes(
                 DimensionSetBaseAttributes.Placings.Fixed,
                 new PlacingDirectionAttributes(true, true),
-                new PlacingDistanceAttributes(2.0, Math.Abs(distance)));
+                new PlacingDistanceAttributes(2.0, Math.Abs(paperDistance)));
             rd.Attributes = attrs;
-            rd.Distance = distance;
+            rd.Distance = paperDistance;
             rd.Modify();
+
+            log("     (Distance na papierze = " + paperDistance.ToString("0.#") + " przy skali " + scale.ToString("0.#") + ")");
 
             // Leader biegnie od łuku w stronę tekstu. Dokładnej długości nie
             // znamy (API nie podaje pozycji tekstu), więc bierzemy z zapasem -
@@ -702,6 +732,56 @@ namespace RadiusDimensionMover
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Jak daleko w kierunku (dirX,dirY) od punktu na łuku sięgają linie
+        /// wymiarowe - w jednostkach modelu. Liczone jako największy rzut ich
+        /// końców na ten kierunek, z pominięciem linii leżących poza
+        /// korytarzem o zadanej połowie szerokości (te nie dotyczą tego
+        /// wymiaru).
+        ///
+        /// Dzięki temu tekst na zewnątrz ląduje tuż ZA opisem elementu, a nie
+        /// w odległości wynikającej z rozmiaru blachy - to dwie różne rzeczy.
+        /// Zwraca 0, gdy w tym kierunku nie ma żadnej linii wymiarowej.
+        /// </summary>
+        private static double OutermostDimensionReach(
+            double originX, double originY, double dirX, double dirY,
+            double corridorHalfWidth, List<Segment> segments)
+        {
+            double maxAlong = 0;
+
+            foreach (var seg in segments)
+            {
+                for (int end = 0; end < 2; end++)
+                {
+                    double px = end == 0 ? seg.X1 : seg.X2;
+                    double py = end == 0 ? seg.Y1 : seg.Y2;
+
+                    double vx = px - originX;
+                    double vy = py - originY;
+
+                    double along = vx * dirX + vy * dirY;
+                    if (along <= 0)
+                    {
+                        continue;   // za łukiem, nie w tym kierunku
+                    }
+
+                    double latX = vx - dirX * along;
+                    double latY = vy - dirY * along;
+                    if (Math.Sqrt(latX * latX + latY * latY) > corridorHalfWidth)
+                    {
+                        continue;   // poza korytarzem
+                    }
+
+                    if (along > maxAlong)
+                    {
+                        maxAlong = along;
+                    }
+                }
+            }
+
+            return maxAlong;
         }
 
         private static bool SegmentsIntersect(
@@ -1018,11 +1098,11 @@ namespace RadiusDimensionMover
         /// na Free ze świeżymi parametrami - potwierdzone empirycznie na
         /// żywym rysunku.
         ///
-        /// WAŻNE - jednostki: PlacingDistanceAttributes (SearchMargin,
-        /// MinimalDistance, MaximalDistance) są w jednostkach MODELU, tak
-        /// samo jak zwykłe Distance - trzeba dzielić przez skalę widoku,
-        /// inaczej (potwierdzone empirycznie) wymiar wyleci daleko poza
-        /// widok przy widoku w powiększonej skali.
+        /// WAŻNE - jednostki: Distance jest w mm NA PAPIERZE, mimo że
+        /// ArcPoint1/2/3 w tej samej klasie są w jednostkach MODELU. Liczymy
+        /// w modelu i dzielimy przez skalę widoku przed zapisem. Pomyłka tutaj
+        /// daje błąd równy skali rysunku (na 1:5 pięciokrotny) i objawia się
+        /// tekstem lądującym po drugiej stronie części.
         /// </summary>
         private bool PlaceUsingFreeMode(RadiusDimension rd, Drawing activeDrawing, double scale, Action<string> log)
         {
