@@ -407,7 +407,8 @@ namespace RadiusDimensionMover
             bool insideAllowed = facts.HoleCount == 0 && roomInside;
 
             log("  Część: płaszczyzna " + facts.FaceShortMm.ToString("0") + " x " + facts.FaceLongMm.ToString("0")
-                + "mm, śruby: " + facts.BoltCount + ", wycięcia: " + facts.BooleanCount
+                + "mm, śruby: " + facts.BoltCount
+                + ", wycięcia: " + facts.TotalCutCount + " (okrągłych: " + facts.RoundCutCount + ")"
                 + ", promień łuku " + radius.ToString("0") + "mm.");
 
             // Zanim wpuścimy tekst do środka: czy droga tam nie przecina
@@ -1126,6 +1127,65 @@ namespace RadiusDimensionMover
         }
 
         /// <summary>
+        /// Czy dana operacja boole'owska to OTWÓR, a nie ścięcie/wcięcie?
+        ///
+        /// `GetBooleans()` zwraca wszystkie operacje boole'owskie, więc bez tego
+        /// filtra ścięty narożnik blachy liczył się jako otwór i tekst wymiaru
+        /// szedł na zewnątrz, choć w środku części było pusto.
+        ///
+        /// Kryterium: wycięcie (nie dodanie materiału ani przygotowanie spoiny)
+        /// częścią o profilu OKRĄGŁYM. Profile odczytane z rzeczywistego modelu
+        /// (5532 operacje boole'owskie) rozkładają się tak:
+        ///
+        ///   okrągłe  -> D22.00, D24, D35.70, D48, D48.30      (pręt okrągły)
+        ///               RD18, RD20, RD22, RD26, RD60          (pręt okrągły)
+        ///               O33.7*3.2                             (rura)
+        ///               RO35.7*3.2, RO48.3*3.6, RO406.4*16    (rura)
+        ///   nieokrągłe -> BL... (blacha, zdecydowana większość),
+        ///                 PL3.0, PLT80
+        ///
+        /// Stąd wzorzec: prefiks D / RD / RO / O, po którym NATYCHMIAST idzie
+        /// cyfra - taka jest konwencja nazw profili w Tekli. Wymóg cyfry chroni
+        /// przed przypadkowym trafieniem w nazwę własną zaczynającą się od tych
+        /// liter.
+        /// </summary>
+        private static bool IsRoundHoleCut(Tekla.Structures.Model.ModelObject boolean)
+        {
+            try
+            {
+                if (!(boolean is Tekla.Structures.Model.BooleanPart bp))
+                {
+                    return false;
+                }
+
+                if (bp.Type != Tekla.Structures.Model.BooleanPart.BooleanTypeEnum.BOOLEAN_CUT)
+                {
+                    return false;   // dodanie materiału albo przygotowanie spoiny
+                }
+
+                string profile = bp.OperativePart?.Profile?.ProfileString;
+                if (string.IsNullOrEmpty(profile))
+                {
+                    return false;
+                }
+
+                return RoundProfilePattern.IsMatch(profile.Trim());
+            }
+            catch
+            {
+                // Nie da się ustalić - bezpieczniej NIE liczyć jako otworu, bo
+                // fałszywy otwór wypycha wymiar na zewnątrz bez potrzeby.
+                return false;
+            }
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex RoundProfilePattern =
+            new System.Text.RegularExpressions.Regex(
+                @"^(RD|RO|D|O)\d",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
         /// Fakty o części, do której należy wymiar, wzięte WPROST Z MODELU:
         /// wymiary PŁASZCZYZNY blachy (bez grubości) oraz liczba otworów. To
         /// one decydują, czy tekst wymiaru może zostać w środku części.
@@ -1141,9 +1201,9 @@ namespace RadiusDimensionMover
         /// tekst zmieści się w obrysie.
         ///
         /// Za otwory liczymy śruby (GetBolts - stąd biorą się opisy typu
-        /// "1*Ø13") oraz wycięcia (GetBooleans). UWAGA: GetBooleans zwraca
-        /// wszystkie operacje boole'owskie, więc np. ścięty narożnik też się
-        /// tu policzy jako "otwór" - dlatego jedno i drugie logujemy osobno.
+        /// "1*Ø13") oraz te wycięcia, które faktycznie są otworami - patrz
+        /// IsRoundHoleCut. `TotalCutCount` trzyma wszystkie wycięcia i służy
+        /// tylko do logu, żeby było widać, ile odrzucono.
         /// </summary>
         private static PartFacts GetPartFacts(RadiusDimension rd, Action<string> log)
         {
@@ -1205,7 +1265,12 @@ namespace RadiusDimensionMover
                     var booleans = modelPart.GetBooleans();
                     while (booleans.MoveNext())
                     {
-                        facts.BooleanCount++;
+                        facts.TotalCutCount++;
+
+                        if (IsRoundHoleCut(booleans.Current))
+                        {
+                            facts.RoundCutCount++;
+                        }
                     }
                 }
             }
@@ -1232,10 +1297,17 @@ namespace RadiusDimensionMover
             public double FaceLongMm;
             public double FaceShortMm;
             public int BoltCount;
-            public int BooleanCount;
+
+            /// Wycięcia uznane za OTWORY (okrągła część operacyjna).
+            public int RoundCutCount;
+
+            /// Wszystkie wycięcia - tylko do logu, żeby było widać, ile
+            /// odrzucono jako ścięcia/wcięcia.
+            public int TotalCutCount;
+
             public bool Valid;
 
-            public int HoleCount => BoltCount + BooleanCount;
+            public int HoleCount => BoltCount + RoundCutCount;
         }
 
         /// <summary>
