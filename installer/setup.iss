@@ -1,4 +1,4 @@
-; Instalator Radius Dimension Mover.
+﻿; Instalator Radius Dimension Mover.
 ;
 ; NIE dolacza zadnych bibliotek Tekla/Trimble - instaluje tylko wlasny,
 ; zbudowany .exe programu, a po instalacji uruchamia fetch-dependencies.ps1,
@@ -9,7 +9,7 @@
 ; instalacja wymaga jej zaakceptowania.
 
 #define MyAppName "Radius Dimension Mover"
-#define MyAppVersion "1.4"
+#define MyAppVersion "1.5"
 #define MyAppPublisher "HoldFort-Bananza"
 #define MyAppExeName "RadiusDimensionMover.exe"
 

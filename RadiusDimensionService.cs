@@ -108,6 +108,13 @@ namespace RadiusDimensionMover
         // szukamy linii wymiarowych na drodze "na zewnątrz".
         private const double OutsideCorridorFraction = 0.5;
 
+        // Kierunki pod 45 stopni (zaokrąglony narożnik) mają |DirX| ≈ |DirY|.
+        // Przy takim remisie grupa wyrównania musi być wybrana
+        // DETERMINISTYCZNIE, inaczej ten sam rysunek raz się wyrównuje, a raz
+        // nie. Wartość poniżej 1 przeciąga remis na stronę pionu - patrz
+        // GroupKey.
+        private const double DiagonalTieTolerance = 0.999;
+
         // Jak długi odcinek linii odniesienia sprawdzamy pod kątem kolizji z
         // opisami - jako wielokrotność rozmiaru części, DODANA do Distance.
         // Hojnie, bo API nie podaje pozycji tekstu wymiaru, a przeszacowanie
@@ -346,6 +353,12 @@ namespace RadiusDimensionMover
             // Czy tekst ma iść do wnętrza części.
             public bool Inside;
 
+            // -1 dla łuku WKLĘSŁEGO, +1 dla wypukłego. Odwraca znak zapisanego
+            // Distance, bo to znak decyduje, po której stronie łuku Tekla
+            // postawi tekst. Ustalone empirycznie: Distance ujemny wysyła
+            // tekst w kierunku środek->łuk, dodatni w przeciwnym.
+            public double OutwardFlip = 1.0;
+
             // Rozmiar części - do wyliczenia długości sprawdzanego leadera.
             public double FaceLongMm;
         }
@@ -402,14 +415,24 @@ namespace RadiusDimensionMover
                 return null;
             }
 
+            // Łuk WKLĘSŁY (wcięcie) ma środek okręgu w pustce, nie w
+            // materiale, więc kierunek środek->łuk wchodzi w część zamiast z
+            // niej wychodzić. Trzeba go odwrócić - patrz CollectRoundingShapes.
+            bool concave = facts.IsConcaveRadius(radius);
+
             bool roomInside = facts.FaceShortMm >= radius * InsideRoomRadiusFactor
                 && facts.FaceShortMm >= InsideMinShortFaceMm;
-            bool insideAllowed = facts.HoleCount == 0 && roomInside;
+
+            // Przy wcięciu "wewnątrz części" traci sens: to, co leży po
+            // stronie środka okręgu, jest pustką poza obrysem, a nie wnętrzem
+            // blachy. Taki wymiar zawsze idzie na zewnątrz.
+            bool insideAllowed = facts.HoleCount == 0 && roomInside && !concave;
 
             log("  Część: płaszczyzna " + facts.FaceShortMm.ToString("0") + " x " + facts.FaceLongMm.ToString("0")
                 + "mm, śruby: " + facts.BoltCount
                 + ", wycięcia: " + facts.TotalCutCount + " (okrągłych: " + facts.RoundCutCount + ")"
-                + ", promień łuku " + radius.ToString("0") + "mm.");
+                + ", promień łuku " + radius.ToString("0") + "mm"
+                + (concave ? " (łuk WKLĘSŁY - kierunek odwrócony)" : "") + ".");
 
             // Zanim wpuścimy tekst do środka: czy droga tam nie przecina
             // INNEGO WYMIARU? Same warunki rozmiarowe tego nie wyłapują - na
@@ -435,6 +458,13 @@ namespace RadiusDimensionMover
                 }
             }
 
+            // Od tego miejsca dirOutX/dirOutY to kierunek, w którym tekst
+            // FAKTYCZNIE ma pójść, żeby wyjść z części. Dla wypukłego to
+            // środek->łuk, dla wklęsłego dokładnie odwrotnie.
+            double flip = concave ? -1.0 : 1.0;
+            double dirOutX = dirX * flip;
+            double dirOutY = dirY * flip;
+
             double distanceModel;
             if (insideAllowed)
             {
@@ -448,7 +478,7 @@ namespace RadiusDimensionMover
                 // rozmiaru części - to dwie różne rzeczy.
                 double reachModel = OutermostDimensionReach(
                     center.X + dirX * radius, center.Y + dirY * radius,
-                    dirX, dirY,
+                    dirOutX, dirOutY,
                     facts.FaceShortMm * OutsideCorridorFraction,
                     obstacles);
 
@@ -464,6 +494,9 @@ namespace RadiusDimensionMover
             // Kierunek zapisany w planie to kierunek, w którym FAKTYCZNIE
             // pójdzie tekst - dla wariantu wewnętrznego przeciwny do "na
             // zewnątrz".
+            // Wariant wewnętrzny zaczepia się na PRZECIWNYM biegunie okręgu
+            // i idzie w stronę materiału - stąd osobny znak. Wariant
+            // zewnętrzny zaczepia się na łuku i idzie kierunkiem dirOut.
             double sign = insideAllowed ? -1.0 : 1.0;
 
             return new PlacementPlan
@@ -472,10 +505,11 @@ namespace RadiusDimensionMover
                 Scale = scale,
                 ArcX = center.X + dirX * radius * sign,
                 ArcY = center.Y + dirY * radius * sign,
-                DirX = dirX * sign,
-                DirY = dirY * sign,
+                DirX = insideAllowed ? -dirX : dirOutX,
+                DirY = insideAllowed ? -dirY : dirOutY,
                 DistanceModel = distanceModel,
                 Inside = insideAllowed,
+                OutwardFlip = insideAllowed ? 1.0 : flip,
                 FaceLongMm = facts.FaceLongMm
             };
         }
@@ -503,6 +537,38 @@ namespace RadiusDimensionMover
         /// Wymiary umieszczone WEWNĄTRZ części są pomijane - tam nie chodzi o
         /// równy szereg, a o zmieszczenie się w obrysie.
         /// </summary>
+        /// <summary>
+        /// Klucz grupy wyrównania: 'G'óra, 'D'ół, 'L'ewo, 'P'rawo.
+        ///
+        /// UWAGA - TU BYŁ BŁĄD. Zaokrąglony narożnik blachy daje kierunek
+        /// dokładnie pod 45 stopni, czyli |DirX| i |DirY| są sobie RÓWNE z
+        /// dokładnością do szumu zmiennoprzecinkowego. Zwykłe porównanie
+        /// `Math.Abs(DirY) >= Math.Abs(DirX)` rozstrzygało wtedy losowo i ten
+        /// sam rysunek przy kolejnych uruchomieniach trafiał do innych grup:
+        /// raz dwie grupy po dwa wymiary (wyrównanie działało), raz cztery
+        /// grupy po jednym (nie działało nic).
+        ///
+        /// Remis rozstrzygamy więc jawnie na korzyść PIONU. Powód nie jest
+        /// dowolny: łańcuchy wymiarowe biegną zwykle nad i pod częścią, więc
+        /// to wspólna WYSOKOŚĆ tekstów jest tym, co widać na rysunku. Zgodne
+        /// z tym, jak układ ustawia człowiek - na [31339] ręcznie ustawione
+        /// teksty miały zgodne Y (167,7 i 166,7 dla pary R5), a X różne.
+        ///
+        /// Tolerancja jest RELATYWNA, bo kierunki są jednostkowe, ale różnice
+        /// biorą się z liczenia środka okręgu i sięgają rzędu 1e-4.
+        /// </summary>
+        private static char GroupKey(double dirX, double dirY)
+        {
+            double ax = Math.Abs(dirX);
+            double ay = Math.Abs(dirY);
+
+            bool vertical = ay >= ax * DiagonalTieTolerance;
+
+            return vertical
+                ? (dirY > 0 ? 'G' : 'D')
+                : (dirX > 0 ? 'P' : 'L');
+        }
+
         private static void AlignPlans(List<PlacementPlan> plans, Action<string> log)
         {
             // Klucz grupy: 'G'/'D' dla pionu, 'L'/'P' dla poziomu.
@@ -515,10 +581,7 @@ namespace RadiusDimensionMover
                     continue;
                 }
 
-                bool vertical = Math.Abs(p.DirY) >= Math.Abs(p.DirX);
-                char key = vertical
-                    ? (p.DirY > 0 ? 'G' : 'D')
-                    : (p.DirX > 0 ? 'P' : 'L');
+                char key = GroupKey(p.DirX, p.DirY);
 
                 if (!groups.TryGetValue(key, out var list))
                 {
@@ -613,7 +676,10 @@ namespace RadiusDimensionMover
         /// </summary>
         private static LeaderRay ApplyPlan(PlacementPlan p, Action<string> log)
         {
-            double paperDistance = OutwardSign * (p.Inside ? -1.0 : 1.0) * p.DistanceModel / p.Scale;
+            // OutwardFlip odwraca znak dla łuków wklęsłych - bez tego tekst
+            // wcięcia leci w materiał. Patrz CollectRoundingShapes.
+            double paperDistance = OutwardSign * (p.Inside ? -1.0 : 1.0) * p.OutwardFlip
+                * p.DistanceModel / p.Scale;
 
             var attrs = p.Dimension.Attributes;
             attrs.Placing = new DimensionSetBaseAttributes.DimensionPlacingAttributes(
@@ -1186,6 +1252,166 @@ namespace RadiusDimensionMover
                 | System.Text.RegularExpressions.RegexOptions.Compiled);
 
         /// <summary>
+        /// Ustala, czy zaokrąglenia na konturze części są WYPUKŁE (zwykły
+        /// zaokrąglony narożnik) czy WKLĘSŁE (wcięcie), i zapisuje wynik pod
+        /// kluczem promienia w facts.ShapeByRadius.
+        ///
+        /// PO CO TO JEST. Znak `Distance` decyduje, po której stronie łuku
+        /// wyląduje tekst, a "na zewnątrz części" to dla łuku wypukłego i
+        /// wklęsłego DWIE PRZECIWNE strony:
+        ///
+        ///   WYPUKŁY narożnik              WKLĘSŁE wcięcie
+        ///   (środek w materiale)          (środek w pustce)
+        ///
+        ///        tekst                          material
+        ///          ^                        ####|####
+        ///         /                         ####|####
+        ///     ___/                          ###/
+        ///    |  .środek                     __/  .środek
+        ///    |#######                            |
+        ///    |#######                            v tekst
+        ///
+        /// Dla wypukłego kierunek środek->łuk wychodzi z części, dla wklęsłego
+        /// wchodzi w nią. Bez tego rozróżnienia tekst wymiaru wklęsłego
+        /// przelatuje przez całą część - a na rysunku z kilkoma widokami
+        /// potrafi wylądować na sąsiednim widoku (sprawdzone na [31339]).
+        ///
+        /// JAK TO LICZYMY. Kontur rzutujemy na jego własną płaszczyznę
+        /// (odrzucamy oś o najmniejszym rozrzucie - to grubość), wyznaczamy
+        /// orientację wielokąta wzorem sznurowkowym, a potem w każdym
+        /// zaokrąglonym wierzchołku bierzemy znak iloczynu wektorowego
+        /// krawędzi wchodzącej i wychodzącej. Znak zgodny z orientacją =
+        /// wierzchołek wypukły, przeciwny = wklęsły.
+        ///
+        /// DLACZEGO PO PROMIENIU. API nie mówi, do którego wierzchołka konturu
+        /// należy dany wymiar R - RadiusDimension zna tylko trzy punkty łuku.
+        /// Promień jest więc jedynym łącznikiem. Gdy ten sam promień występuje
+        /// i jako wypukły, i jako wklęsły, zapisujemy 0 i wymiar jest
+        /// traktowany jak wypukły (zachowanie sprzed tej zmiany).
+        ///
+        /// Zgodność sprawdzona na rysunku [31339]: test wskazał wklęsłe R5 i
+        /// wypukłe R20, dokładnie tak, jak człowiek ustawił znaki ręcznie
+        /// (R5 -> Distance dodatni, R20 -> ujemny).
+        /// </summary>
+        private static void CollectRoundingShapes(
+            Tekla.Structures.Model.Part modelPart, PartFacts facts)
+        {
+            try
+            {
+                if (!(modelPart is Tekla.Structures.Model.ContourPlate plate))
+                {
+                    return;   // tylko blachy konturowe mają kontur z fazami
+                }
+
+                var xs = new List<double[]>();
+                var chamfers = new List<Tekla.Structures.Model.Chamfer>();
+                foreach (var o in plate.Contour.ContourPoints)
+                {
+                    if (o is Tekla.Structures.Model.ContourPoint cp)
+                    {
+                        xs.Add(new[] { cp.X, cp.Y, cp.Z });
+                        chamfers.Add(cp.Chamfer);
+                    }
+                }
+
+                int n = xs.Count;
+                if (n < 3)
+                {
+                    return;
+                }
+
+                // Płaszczyzna konturu: odrzuć oś o najmniejszym rozrzucie.
+                int drop = 0;
+                double worst = double.MaxValue;
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    double min = double.MaxValue, max = double.MinValue;
+                    foreach (var p in xs)
+                    {
+                        if (p[axis] < min) min = p[axis];
+                        if (p[axis] > max) max = p[axis];
+                    }
+                    if (max - min < worst)
+                    {
+                        worst = max - min;
+                        drop = axis;
+                    }
+                }
+                int ia = drop == 0 ? 1 : 0;
+                int ib = drop == 2 ? 1 : 2;
+
+                // Orientacja wielokąta (wzór sznurowkowy).
+                double area2 = 0;
+                for (int i = 0; i < n; i++)
+                {
+                    var p = xs[i];
+                    var q = xs[(i + 1) % n];
+                    area2 += p[ia] * q[ib] - q[ia] * p[ib];
+                }
+                if (Math.Abs(area2) < 1e-6)
+                {
+                    return;   // zdegenerowany kontur
+                }
+                double winding = Math.Sign(area2);
+
+                for (int i = 0; i < n; i++)
+                {
+                    var ch = chamfers[i];
+                    if (ch == null)
+                    {
+                        continue;
+                    }
+
+                    bool rounded =
+                        ch.Type == Tekla.Structures.Model.Chamfer.ChamferTypeEnum.CHAMFER_ROUNDING
+                        || ch.Type == Tekla.Structures.Model.Chamfer.ChamferTypeEnum.CHAMFER_ARC
+                        || ch.Type == Tekla.Structures.Model.Chamfer.ChamferTypeEnum.CHAMFER_ARC_POINT;
+                    if (!rounded)
+                    {
+                        continue;
+                    }
+
+                    double radius = Math.Max(ch.X, ch.Y);
+                    if (radius <= 0.01)
+                    {
+                        continue;
+                    }
+
+                    var prev = xs[(i - 1 + n) % n];
+                    var cur = xs[i];
+                    var next = xs[(i + 1) % n];
+                    double v1a = cur[ia] - prev[ia], v1b = cur[ib] - prev[ib];
+                    double v2a = next[ia] - cur[ia], v2b = next[ib] - cur[ib];
+                    double cross = v1a * v2b - v1b * v2a;
+                    if (Math.Abs(cross) < 1e-6)
+                    {
+                        continue;   // wierzchołek współliniowy - nic nie wnosi
+                    }
+
+                    int shape = Math.Sign(cross) == winding ? 1 : -1;
+                    int key = (int)Math.Round(radius * 10.0);
+
+                    if (facts.ShapeByRadius.TryGetValue(key, out int known))
+                    {
+                        if (known != shape)
+                        {
+                            facts.ShapeByRadius[key] = 0;   // sprzeczne
+                        }
+                    }
+                    else
+                    {
+                        facts.ShapeByRadius[key] = shape;
+                    }
+                }
+            }
+            catch
+            {
+                // Brak danych o wypukłości = zachowanie jak dotąd. Nigdy nie
+                // przerywamy z tego powodu rozstawiania wymiarów.
+            }
+        }
+
+        /// <summary>
         /// Fakty o części, do której należy wymiar, wzięte WPROST Z MODELU:
         /// wymiary PŁASZCZYZNY blachy (bez grubości) oraz liczba otworów. To
         /// one decydują, czy tekst wymiaru może zostać w środku części.
@@ -1272,6 +1498,8 @@ namespace RadiusDimensionMover
                             facts.RoundCutCount++;
                         }
                     }
+
+                    CollectRoundingShapes(modelPart, facts);
                 }
             }
             catch (Exception ex)
@@ -1307,7 +1535,37 @@ namespace RadiusDimensionMover
 
             public bool Valid;
 
+            /// <summary>
+            /// Wypukłość zaokrągleń konturu, po PROMIENIU (w dziesiątych
+            /// milimetra, żeby klucz był całkowity). Wartości: +1 wszystkie
+            /// wypukłe, -1 wszystkie wklęsłe, 0 sprzeczne.
+            ///
+            /// Promień jest jedynym pewnym łącznikiem między wymiarem R na
+            /// rysunku a wierzchołkiem konturu w modelu - API nie mówi, do
+            /// którego narożnika należy dany wymiar.
+            /// </summary>
+            public readonly Dictionary<int, int> ShapeByRadius = new Dictionary<int, int>();
+
             public int HoleCount => BoltCount + RoundCutCount;
+
+            /// <summary>
+            /// Czy łuk o tym promieniu jest WKLĘSŁY (wcięcie), a nie
+            /// zaokrąglonym narożnikiem? Gdy nie wiadomo albo gdy ten sam
+            /// promień występuje w obu postaciach - zwraca false, czyli
+            /// zachowanie jak dotąd.
+            /// </summary>
+            public bool IsConcaveRadius(double radiusMm)
+            {
+                int key = (int)Math.Round(radiusMm * 10.0);
+                foreach (int k in new[] { key, key - 1, key + 1 })
+                {
+                    if (ShapeByRadius.TryGetValue(k, out int shape))
+                    {
+                        return shape < 0;
+                    }
+                }
+                return false;
+            }
         }
 
         /// <summary>
