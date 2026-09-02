@@ -185,7 +185,17 @@ namespace RadiusDimensionMover
         // zacisku tekst leci za nimi i wychodzi za kartke; operator zglosil to
         // na rysunkach w skali 1:10. Zacisk moze tylko PRZYCIAGNAC tekst
         // blizej, nigdy odsunac, wiec nie da sie nim stworzyc nowego problemu.
-        private const double OutsideSheetMarginPaperMm = 12.0;
+        // 25mm, nie 12mm. Zacisk przycina PUNKT ZACZEPIENIA tekstu, a margines
+        // musi pokryc dwie rzeczy, ktorych API nie podaje:
+        //   - polowe szerokosci samego tekstu (RadiusDimension nie zna swojego
+        //     rozmiaru - ta sama luka, ktora wymusza wszystkie kompromisy tutaj),
+        //   - odsuniecie RAMKI rysunku od brzegu papieru, bo
+        //     GetSheet().GetAxisAlignedBoundingBox() zwraca PAPIER (na [31608]
+        //     dokladnie 0..420 x 0..297, czyli A3), a nie obszar w ramce.
+        //
+        // Przy 12mm operator zglosil, ze tekst "nachodzi na granice, a ma sie
+        // konczyc przed nia" - przy druku groziloby to przycieciem.
+        private const double OutsideSheetMarginPaperMm = 25.0;
 
         // Minimalny prześwit między opisem (Mark) a linią odniesienia wymiaru
         // R, ponad połowę przekątnej opisu (mm w modelu). Odsunięcie ma być
