@@ -23,3 +23,9 @@ installer/output/
 ## Rider / VSCode
 .idea/
 .vscode/
+
+## Claude Code /export writes into the working directory, so a session
+## transcript lands inside the repo and shows up as ~10k new lines ready
+## for a pull request. Names look like
+## 2026-09-02-173917-this-session-is-being-continued-...txt
+20??-??-??-??????-*.txt
