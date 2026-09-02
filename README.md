@@ -8,7 +8,7 @@ promieni** (`R…`) na otwartym rysunku.
 > Cała wiedza techniczna jest tam i **tylko tam**: algorytm, fakty o API Tekli,
 > parametry, budowanie, diagnostyka, znane ograniczenia oraz — najważniejsze —
 > **[ślepe uliczki](https://github.com/HoldFort-Bananza/Radius-Dimention-Mover/wiki/4-Slepe-uliczki)**,
-> czyli czternaście podejść, które zostały zaimplementowane, zmierzone na żywych
+> czyli osiemnaście podejść, które zostały zaimplementowane, zmierzone na żywych
 > rysunkach i **nie działają**.
 >
 > Ten plik celowo nie powtarza szczegółów — README i wiki rozjeżdżały się
@@ -73,6 +73,11 @@ projekt, potem `ISCC.exe installer\setup.iss`.
 
 Szczegóły, pułapki i procedura wydawania wersji:
 **[Wiki → Budowanie](https://github.com/HoldFort-Bananza/Radius-Dimention-Mover/wiki/6-Budowanie)**.
+
+Zmiany w samym rozstawianiu wymiarów idą przez **gałąź i pull request** — `main`
+jest bazą wydania i musi się zgadzać z tagiem oraz z zainstalowaną kopią.
+Drobiazgi (dokumentacja, `.gitignore`, numer wersji) commitujemy prosto na
+`main`.
 
 ## Struktura
 

@@ -18,9 +18,9 @@ też przyszłych projektów. **Nie kasuj żadnego.**
 
 **Dokumentacja:** https://github.com/HoldFort-Bananza/Radius-Dimention-Mover/wiki
 — zacznij od stron `2-Algorytm`, `3-API-Tekli` i **`4-Slepe-uliczki`**.
-Tej ostatniej nie pomijaj: czternaście podejść, które zostały zaimplementowane,
-zmierzone na żywych rysunkach i **nie działają**. Bez niej powtórzysz kilka dni
-pracy.
+Tej ostatniej nie pomijaj: **osiemnaście** podejść, które zostały
+zaimplementowane, zmierzone na żywych rysunkach i **nie działają**. Bez niej
+powtórzysz kilka dni pracy.
 
 ## Struktura
 
@@ -165,6 +165,37 @@ Przy diagnozowaniu wygodnie dodać do `Program.cs` tymczasowe przełączniki
 **Usunąć przed commitem** — wydawany program ma mieć tylko `Main` z `MainForm`.
 Po usunięciu przebudować i przywrócić `bin/` z commitu, żeby instalator pakował
 czysty `.exe`.
+
+## Praca z gitem — od 02.09.2026 na gałęziach
+
+Do v1.10 wszystko szło prosto na `main` z terminala. Teraz:
+
+| Rodzaj zmiany | Jak |
+|---|---|
+| rozstawianie, progi, kolejność potoku | **gałąź + PR** |
+| wiki, README, `.gitignore`, podniesienie wersji | prosto na `main` |
+
+Nie chodzi o przegląd kodu — programista jest jeden. Chodzi o to, że `main` jest
+**bazą wydania**: tag, `<Version>`, `MyAppVersion` i kopia w
+`%LOCALAPPDATA%\Programs\` muszą zgadzać się z jednym commitem. `git switch main`
+ma przywracać program, który da się zbudować i zainstalować.
+
+- **`gh` NIE jest zainstalowany.** PR-y przez REST API, token z
+  `git credential fill`, opis składany w Pythonie i `--data-binary @plik.json`.
+- **Scalenie PR-a blokuje klasyfikator auto mode.** Otwarcie przechodzi,
+  `PUT .../merge` nie. Merge klika operator — i tak on ocenia rozstawienie.
+- ⚠️ **Tag `Main` przysłania gałąź `main`** (Windows nie rozróżnia wielkości
+  liter). `git checkout main` ostrzega o dwuznaczności, a
+  `git checkout refs/heads/main` wrzuca w **detached HEAD**, po którym `git pull`
+  odmawia działania. Używaj `git switch main`. Tagu nie kasuj — wisi na nim stary
+  śmieciowy release.
+- **`bin/x64/Debug/net48/*.exe` jest śledzony celowo**, więc gałęzie z różnymi
+  buildami kolidują na binarce. Po przeskoku **przebuduj**, nie scalaj.
+- **`/export` zapisuje do katalogu roboczego**, czyli do środka repo. Wzorzec
+  `20??-??-??-??????-*.txt` jest w `.gitignore` — jedna sesja zostawiła tam plik
+  9586 linii, gotowy do wypchnięcia w publiczne repo.
+
+Gałąź daje tani odwrót, ale **przed zepsuciem chroni zestaw regresyjny**, nie ona.
 
 ## Wydawanie wersji
 
