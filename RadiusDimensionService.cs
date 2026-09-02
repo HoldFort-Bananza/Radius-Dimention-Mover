@@ -128,6 +128,36 @@ namespace RadiusDimensionMover
         // GroupKey.
         private const double DiagonalTieTolerance = 0.999;
 
+        // Minimalny odstep miedzy SRODKAMI tekstow dwoch wymiarow R (mm papieru).
+        //
+        // 15mm, nie 22mm, i to ZMIERZONE, nie oszacowane. Prog ma lapac realne
+        // nachodzenie, a nie kosmetyke na granicy:
+        //
+        //    4,0mm  [31615]  operator: teksty nachodza          -> naprawic
+        //   14,6mm  [21143]  na granicy, geometrycznie nie do naprawienia
+        //   19,2mm  [35048]  wygladalo dobrze, a prog 22 kazal to ruszyc
+        //                    i rozjechal wyrownanie o 3,7mm - niepotrzebnie
+        //
+        // Przy 22mm regula ruszala rysunki, ktore byly w porzadku, placac za to
+        // rozjechaniem rownego szeregu. Przy 15mm nie dotyka ani [35048], ani
+        // [21143], a [31615] nadal naprawia.
+        private const double MinTextGapPaperMm = 15.0;
+
+        // Margines od krawedzi arkusza, ktorego rozsuwanie NIE MOZE przekroczyc.
+        // Bez tego limitu pierwsza wersja rozsuwania wyrzucila trzy teksty na
+        // 5mm od gornej krawedzi kartki - patrz ResolveTextCollisions.
+        private const double SheetEdgeMarginPaperMm = 12.0;
+
+        // Zapas, o jaki tekst musi minac KONIEC cudzej linii odniesienia, gdy
+        // ucieka wzdluz niej zamiast w poprzek.
+        private const double LeaderEndMarginPaperMm = 8.0;
+
+        // Najkrotsza linia odniesienia dla tekstu WEWNATRZ czesci (mm papieru).
+        // Wymiar wewnetrzny rozwiazuje kolizje SKRACANIEM, wiec potrzebna jest
+        // dolna granica - inaczej tekst siadlby na samym luku i leader
+        // przestalby byc widoczny.
+        private const double MinInsideLeaderPaperMm = 4.0;
+
         // Jak długi odcinek linii odniesienia sprawdzamy pod kątem kolizji z
         // opisami - jako wielokrotność rozmiaru części, DODANA do Distance.
         // Hojnie, bo API nie podaje pozycji tekstu wymiaru, a przeszacowanie
@@ -301,6 +331,7 @@ namespace RadiusDimensionMover
             }
 
             AlignPlans(plans, log);
+            ResolveTextCollisions(plans, sheet.GetAxisAlignedBoundingBox(), log);
 
             // Promienie linii odniesienia - potrzebne w ostatnim etapie, żeby
             // wiedzieć, czego opisy mają nie zasłaniać.
@@ -374,6 +405,23 @@ namespace RadiusDimensionMover
 
             // Rozmiar części - do wyliczenia długości sprawdzanego leadera.
             public double FaceLongMm;
+
+            // Początek widoku na ARKUSZU (mm papieru) - żeby teksty z różnych
+            // widoków dały się porównać w jednym układzie.
+            public double ViewOriginX;
+            public double ViewOriginY;
+
+            /// Domniemane położenie tekstu na arkuszu (mm papieru). To SZACUNEK -
+            /// API nie podaje pozycji tekstu wymiaru R.
+            public double TextSheetX => ViewOriginX + (ArcX + DirX * DistanceModel) / Scale;
+            public double TextSheetY => ViewOriginY + (ArcY + DirY * DistanceModel) / Scale;
+
+            /// Punkt zaczepienia linii odniesienia na arkuszu (mm papieru).
+            public double ArcSheetX => ViewOriginX + ArcX / Scale;
+            public double ArcSheetY => ViewOriginY + ArcY / Scale;
+
+            /// Długość linii odniesienia w mm papieru.
+            public double LeaderPaperMm => DistanceModel / Scale;
         }
 
         /// <summary>
@@ -507,6 +555,23 @@ namespace RadiusDimensionMover
             // Kierunek zapisany w planie to kierunek, w którym FAKTYCZNIE
             // pójdzie tekst - dla wariantu wewnętrznego przeciwny do "na
             // zewnątrz".
+            // Początek widoku na arkuszu - potrzebny do porównywania
+            // położeń tekstów między wymiarami (ResolveTextCollisions).
+            var viewOrigin = new Tekla.Structures.Geometry3d.Point(0, 0, 0);
+            try
+            {
+                var ownView = rd.GetView();
+                if (ownView != null)
+                {
+                    viewOrigin = ownView.Origin;
+                }
+            }
+            catch
+            {
+                // Bez początku widoku porównanie zadziała w układzie widoku -
+                // dla rysunku z jednym widokiem to wystarcza.
+            }
+
             // Wariant wewnętrzny zaczepia się na PRZECIWNYM biegunie okręgu
             // i idzie w stronę materiału - stąd osobny znak. Wariant
             // zewnętrzny zaczepia się na łuku i idzie kierunkiem dirOut.
@@ -523,7 +588,9 @@ namespace RadiusDimensionMover
                 DistanceModel = distanceModel,
                 Inside = insideAllowed,
                 OutwardFlip = insideAllowed ? 1.0 : flip,
-                FaceLongMm = facts.FaceLongMm
+                FaceLongMm = facts.FaceLongMm,
+                ViewOriginX = viewOrigin.X,
+                ViewOriginY = viewOrigin.Y
             };
         }
 
@@ -550,6 +617,233 @@ namespace RadiusDimensionMover
         /// Wymiary umieszczone WEWNĄTRZ części są pomijane - tam nie chodzi o
         /// równy szereg, a o zmieszczenie się w obrysie.
         /// </summary>
+        /// <summary>
+        /// Rozsuwa teksty dwóch wymiarów R, które wylądowały jeden na drugim.
+        ///
+        /// HISTORIA DWÓCH NIEUDANYCH PODEJŚĆ - warto ją znać, żeby nie powtórzyć.
+        /// Wszystko zmierzone na [31615], blasze z pięcioma wymiarami R, gdzie
+        /// `R30` i `R20` mają kierunki rozchodzące się pod zaledwie 14 stopni
+        /// (iloczyn skalarny 0,97), czyli praktycznie ten sam korytarz.
+        ///
+        ///   1. "Odsuń ten, który jest sam w grupie" - odsunęło `R30`. Teksty
+        ///      owszem się rozjechały, ale LINIA `R30` zaczęła przechodzić przez
+        ///      tekst `R20`. Bo odległość tekstu od linii nie zależy od jej
+        ///      długości: `R20` leży 1,1mm od linii `R30` zawsze, a wydłużenie
+        ///      sprawia tylko, że linia tam DOCHODZI (tekst `R20` rzutuje się na
+        ///      48mm, linia miała 44,3mm i mijała go o 3,7mm).
+        ///
+        ///   2. "Odsuń ten, którego tekst leży na cudzej linii, aż odejdzie w
+        ///      POPRZEK" - przy 14 stopniach między kierunkami na 9mm prześwitu
+        ///      trzeba 38mm jazdy, a ponowne wyrównanie dociągnęło za nim
+        ///      partnera z grupy. Trzy teksty wylądowały 5mm od krawędzi kartki.
+        ///
+        /// CO DZIAŁA. Tekst nie ucieka od cudzej linii w poprzek, a PRZESKAKUJE
+        /// ZA JEJ KONIEC - to jest tanie, bo kierunki są prawie równoległe.
+        /// Wymagamy naraz dwóch rzeczy: odstępu MinTextGapPaperMm między
+        /// tekstami ORAZ minięcia końca cudzej linii o LeaderEndMarginPaperMm.
+        /// Na [31615] wychodzi z tego przesunięcie `R20` o 18mm zamiast 38mm.
+        ///
+        /// TRZY ZABEZPIECZENIA, których brakowało poprzednim wersjom:
+        ///   - kandydatów jest DWÓCH (każdy z pary) i wybieramy TAŃSZEGO,
+        ///   - odrzucamy rozwiązanie, po którym tekst wyszedłby za arkusz,
+        ///   - gdy żadne nie przechodzi, NIE RUSZAMY NICZEGO i mówimy o tym w
+        ///     logu. Lepiej zostawić kolizję niż wyrzucić tekst z kartki.
+        ///
+        /// Nie ma tu ponownego wyrównywania: operator zdecydował, że brak
+        /// kolizji jest ważniejszy od równego szeregu, gdy trzeba wybrać.
+        /// </summary>
+        private static void ResolveTextCollisions(
+            List<PlacementPlan> plans, RectangleBoundingBox sheet, Action<string> log)
+        {
+            if (plans.Count < 2)
+            {
+                return;
+            }
+
+            for (int i = 0; i < plans.Count; i++)
+            {
+                for (int j = i + 1; j < plans.Count; j++)
+                {
+                    var a = plans[i];
+                    var b = plans[j];
+
+                    double dx = a.TextSheetX - b.TextSheetX;
+                    double dy = a.TextSheetY - b.TextSheetY;
+                    double gap = Math.Sqrt(dx * dx + dy * dy);
+                    if (gap >= MinTextGapPaperMm)
+                    {
+                        continue;
+                    }
+
+                    // Dwóch kandydatów do ustąpienia; wybieramy tańszego, który
+                    // przy tym zostaje na arkuszu.
+                    PlacementPlan chosen = null;
+                    double chosenT = 0, chosenPush = double.MaxValue;
+
+                    foreach (var pair in new[] { Tuple.Create(a, b), Tuple.Create(b, a) })
+                    {
+                        var mover = pair.Item1;
+                        var other = pair.Item2;
+                        double now = mover.LeaderPaperMm;
+                        double t;
+
+                        if (mover.Inside)
+                        {
+                            // WEWNĄTRZ części tekst rozwiązuje kolizję
+                            // SKRÓCENIEM, nie wydłużeniem. "Dalej" znaczyłoby
+                            // tu głębiej w materiał: na [21143] (blacha 168mm)
+                            // wypchnięcie dało Distance 180mm w modelu, czyli
+                            // tekst wychodził drugą stroną poza obrys.
+                            //
+                            // Skracanie jest tu bezpieczne, bo wewnątrz nie ma
+                            // łańcuchów wymiarowych do omijania, a tekst wraca
+                            // do narożnika, który przecież opisuje.
+                            t = ShorterLength(mover, other);
+                            if (t >= now - 0.01 || t < MinInsideLeaderPaperMm)
+                            {
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            t = RequiredLength(mover, other);
+                            if (t <= now + 0.01)
+                            {
+                                continue;
+                            }
+
+                            double nx = mover.ArcSheetX + mover.DirX * t;
+                            double ny = mover.ArcSheetY + mover.DirY * t;
+
+                            bool onSheet =
+                                nx >= sheet.MinPoint.X + SheetEdgeMarginPaperMm
+                                && nx <= sheet.MaxPoint.X - SheetEdgeMarginPaperMm
+                                && ny >= sheet.MinPoint.Y + SheetEdgeMarginPaperMm
+                                && ny <= sheet.MaxPoint.Y - SheetEdgeMarginPaperMm;
+                            if (!onSheet)
+                            {
+                                continue;
+                            }
+                        }
+
+                        double change = Math.Abs(t - now);
+                        if (change < chosenPush)
+                        {
+                            chosenPush = change;
+                            chosenT = t;
+                            chosen = mover;
+                        }
+                    }
+
+                    if (chosen == null)
+                    {
+                        // Powody bywają dwa i warto je rozróżnić w logu:
+                        // na zewnątrz - tekst wyszedłby za arkusz;
+                        // wewnątrz    - skrócenie nie wystarcza, bo oba teksty
+                        //               jadą po przekątnych KU SOBIE i spotykają
+                        //               się w środku (na [21143] maksimum
+                        //               osiągalne to 7,8mm zamiast 22mm).
+                        bool bothInside = a.Inside && b.Inside;
+                        log("  Dwa wymiary R nachodzą na siebie (" + gap.ToString("0.#")
+                            + "mm), ale " + (bothInside
+                                ? "oba są wewnątrz części i skrócenie nie da wymaganego odstępu"
+                                : "każde rozsunięcie wyprowadziłoby tekst za arkusz")
+                            + " - zostawiono bez zmian.");
+                        continue;
+                    }
+
+                    bool shortened = chosenT < chosen.LeaderPaperMm;
+                    chosen.DistanceModel = chosenT * chosen.Scale;
+
+                    log("  Tekst wymiaru " + (shortened ? "przyciągnięty" : "odsunięty")
+                        + " o " + chosenPush.ToString("0.#")
+                        + "mm na papierze - nachodził na inny wymiar R (było "
+                        + gap.ToString("0.#") + "mm, wymagane "
+                        + MinTextGapPaperMm.ToString("0") + "mm).");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Jak KRÓTKA musi być linia odniesienia `mover`, żeby jego tekst
+        /// odsunął się od tekstu `other` na MinTextGapPaperMm - dla wymiarów
+        /// umieszczonych WEWNĄTRZ części, gdzie kolizję rozwiązuje się
+        /// przyciągnięciem tekstu do jego własnego narożnika.
+        ///
+        /// To samo równanie kwadratowe co przy wydłużaniu, tylko bierzemy
+        /// MNIEJSZY pierwiastek - ten po stronie krótszej niż obecna długość.
+        /// </summary>
+        private static double ShorterLength(PlacementPlan mover, PlacementPlan other)
+        {
+            double dx = mover.ArcSheetX - other.TextSheetX;
+            double dy = mover.ArcSheetY - other.TextSheetY;
+            double b = dx * mover.DirX + dy * mover.DirY;
+            double c = dx * dx + dy * dy;
+            double disc = b * b - c + MinTextGapPaperMm * MinTextGapPaperMm;
+
+            if (disc < 0)
+            {
+                return double.MaxValue;   // brak rozwiązania
+            }
+
+            return -b - Math.Sqrt(disc);
+        }
+
+        /// <summary>
+        /// Jak długa (w mm papieru) musi być linia odniesienia `mover`, żeby
+        /// jego tekst przestał przeszkadzać wymiarowi `other`. Dwa warunki
+        /// naraz, oba w postaci zamkniętej - bez iteracji:
+        ///
+        ///   1. ODSTĘP TEKSTÓW. Tekst jedzie po `A + u*t`, więc
+        ///      `|A + u*t - T_other| >= g` to zwykłe równanie kwadratowe
+        ///      `t^2 + 2(d.u)t + (|d|^2 - g^2) = 0`. Skoro `t` obecne nie
+        ///      spełnia, bierzemy większy pierwiastek.
+        ///
+        ///   2. MINIĘCIE KOŃCA CUDZEJ LINII. Rzut tekstu na kierunek `w` linii
+        ///      `other` rośnie liniowo z `t`, więc wystarczy przekroczyć
+        ///      `L + margines`. To jest ta TANIA ucieczka: przy kierunkach
+        ///      prawie równoległych `u.w` jest blisko 1, więc kilkanaście
+        ///      milimetrów wystarcza, zamiast kilkudziesięciu na odejście w
+        ///      poprzek.
+        /// </summary>
+        private static double RequiredLength(PlacementPlan mover, PlacementPlan other)
+        {
+            double needed = mover.LeaderPaperMm;
+
+            // --- 1. odstęp tekstów ---
+            double dx = mover.ArcSheetX - other.TextSheetX;
+            double dy = mover.ArcSheetY - other.TextSheetY;
+            double b = dx * mover.DirX + dy * mover.DirY;
+            double c = dx * dx + dy * dy;
+            double disc = b * b - c + MinTextGapPaperMm * MinTextGapPaperMm;
+            if (disc >= 0)
+            {
+                double root = -b + Math.Sqrt(disc);
+                if (root > needed)
+                {
+                    needed = root;
+                }
+            }
+
+            // --- 2. minięcie końca linii `other` ---
+            double relX = mover.ArcSheetX - other.ArcSheetX;
+            double relY = mover.ArcSheetY - other.ArcSheetY;
+            double alongAtArc = relX * other.DirX + relY * other.DirY;
+            double rate = mover.DirX * other.DirX + mover.DirY * other.DirY;
+
+            if (rate > 1e-4)
+            {
+                double target = other.LeaderPaperMm + LeaderEndMarginPaperMm;
+                double t = (target - alongAtArc) / rate;
+                if (t > needed)
+                {
+                    needed = t;
+                }
+            }
+
+            return needed;
+        }
+
         /// <summary>
         /// Klucz grupy wyrównania: 'G'óra, 'D'ół, 'L'ewo, 'P'rawo.
         ///
