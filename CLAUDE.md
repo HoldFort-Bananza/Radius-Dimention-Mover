@@ -1,12 +1,24 @@
 # Radius Dimension Mover
 
 Samodzielny `.exe` dla Tekla Structures 2025. Jedno kliknięcie porządkuje
-wszystkie wymiary promieni (`R…`) na otwartym rysunku. Reguły ogólne dla
-środowiska są w `..\CLAUDE.md`.
+wszystkie wymiary promieni (`R…`) na otwartym rysunku.
+
+## Dwa pliki CLAUDE.md — oba obowiązują
+
+Claude Code czyta `CLAUDE.md` z katalogu roboczego **i ze wszystkich katalogów
+nadrzędnych**, więc nie ma tu duplikatu, jest podział:
+
+| Plik | Zakres | Kiedy ruszać |
+|---|---|---|
+| `..\CLAUDE.md` (w `Projekty`) | środowisko Tekli, twarde zasady, pułapki API wspólne dla **każdego** projektu tutaj | gdy odkryjesz coś o Tekli/API |
+| `CLAUDE.md` (ten, w repo) | tylko rozstawianie wymiarów R: semantyka, progi, testy, wydawanie | gdy zmienia się ten program |
+
+Ten plik jedzie razem z kodem w repozytorium, tamten zostaje lokalnie i dotyczy
+też przyszłych projektów. **Nie kasuj żadnego.**
 
 **Dokumentacja:** https://github.com/HoldFort-Bananza/Radius-Dimention-Mover/wiki
 — zacznij od stron `2-Algorytm`, `3-API-Tekli` i **`4-Slepe-uliczki`**.
-Tej ostatniej nie pomijaj: jedenaście podejść, które zostały zaimplementowane,
+Tej ostatniej nie pomijaj: czternaście podejść, które zostały zaimplementowane,
 zmierzone na żywych rysunkach i **nie działają**. Bez niej powtórzysz kilka dni
 pracy.
 
@@ -45,6 +57,15 @@ bez weryfikacji po fakcie.
   części.
 - **Odległości nie liczy się od `StraightDimension.StartPoint/EndPoint`** — te
   leżą na części, a linia wymiarowa jest odsunięta o `set.Distance`.
+- **Pozycja tekstu jest SZACOWANA** (`łuk + kierunek × Distance`). Wystarcza do
+  wyrównywania wymiarów między sobą (błąd wspólny się skraca), **nie wystarcza**
+  do orzekania o kolizji — na tym oparty automat dawał fałszywe alarmy.
+- **Odległość tekstu od cudzej linii odniesienia nie zależy od jej długości.**
+  Wydłużenie linii sprawia tylko, że ona tam **dochodzi**. Dlatego tekst uciekający
+  od cudzej linii przeskakuje **za jej koniec**, a nie odchodzi w poprzek.
+- **Dla wymiaru WEWNĄTRZ części „dalej" znaczy głębiej w materiał.** Kolizję
+  rozwiązuje tam **skrócenie**, nie wydłużenie — inaczej tekst wychodzi drugą
+  stroną obrysu.
 
 ## Jak ustalać progi i stałe
 
@@ -71,6 +92,8 @@ rozstawiania:
 |---|---|
 | `[31202]` | blacha 100×200 ze ścięciami, próg wąskiej blachy, wyrównanie |
 | `[31339]` | dwa łuki wklęsłe i dwa wypukłe, drugi widok na arkuszu |
+| `[31615]` | pięć wymiarów R, kolizja tekstów rozwiązywana przeskokiem za linię |
+| `[11227]` | blacha skośna w modelu — rozmiar liczony z konturu, nie z bryły |
 
 **Skala projektu:** program ma znaczenie dla **125 rysunków** (tyle blach ma
 zaokrąglenie na konturze), nie 2298. Warto to pamiętać, oceniając, ile pracy
@@ -79,6 +102,28 @@ wart jest kolejny przypadek brzegowy.
 Kandydata do testu wybiera się **od rysunków do części** —
 `GetModelObjectIdentifiers` działa na zamkniętym rysunku, więc pełny przelot to
 sekundy. Pozycja w modelu może w ogóle nie mieć rysunku.
+
+### Przelot po całym modelu — mierz zasięg zmiany, nie zgaduj
+
+Przed wydaniem każdej zmiany progu **zmierz, ilu rysunków dotyka**. Da się to
+zrobić bez ryzyka:
+
+```csharp
+dh.SetActiveDrawing(drawing, true);   // true = pokaz w edytorze
+new RadiusDimensionService().AutoPlaceWithCollisionAvoidance(log);
+dh.CloseActiveDrawing(false);         // false = BEZ ZAPISU -> cofa zmiany
+```
+
+- `CloseActiveDrawing(false)` **cofa zmiany** — sprawdzone: `0 → 52,29 → 0`.
+- **Trzymaj referencje `Drawing`** z pierwszego skanu. Szukanie po `Mark` przez
+  `GetDrawings()` to 85 s na rysunek zamiast 6 s — 14× różnicy.
+- **Usuń stary plik wyników przed startem.** Monitor czekający na „plik istnieje"
+  policzy dane z poprzedniego przebiegu (zdarzyło się, dało błędny raport).
+- Przelot służy do wykrywania **awarii** i mierzenia **zasięgu**. Do oceny
+  „ładnie / nieładnie" potrzebne jest oko operatora — nie ma obejścia.
+
+Wynik na tym modelu: 125 kandydatów, 110 przelatuje, 15 wymaga najpierw
+`UpdateDrawing()` (rysunki `1.xxxx`), 7 nie ma wymiarów R.
 
 ## Rusztowanie diagnostyczne
 
