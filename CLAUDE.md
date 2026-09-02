@@ -66,6 +66,39 @@ bez weryfikacji po fakcie.
 - **Dla wymiaru WEWNĄTRZ części „dalej" znaczy głębiej w materiał.** Kolizję
   rozwiązuje tam **skrócenie**, nie wydłużenie — inaczej tekst wychodzi drugą
   stroną obrysu.
+- **Odległość na zewnątrz nie ma naturalnego ograniczenia.** Bierze się z
+  zasięgu linii wymiarowych, a te sięgają setek milimetrów — bez zacisku tekst
+  wychodzi za arkusz.
+- **Przeszkody (linie wymiarowe) leżą POZA częścią**, odsunięte o
+  `set.Distance`. Tekst idący do wnętrza zostaje w obrysie, więc test przecięcia
+  drogi do środka nie ma czego łapać — odpala się tylko wtedy, gdy sprawdzany
+  odcinek błędnie wychodzi poza blachę.
+
+## Kolejność potoku — reguła, która wynika z czterech pomyłek
+
+```
+policz plany -> wyrównaj -> rozsuń kolizje -> PRZYTNIJ DO ARKUSZA -> zapisz
+```
+
+**Zabezpieczenie ograniczające odległość należy do KOŃCA potoku**, nie do
+miejsca, gdzie odległość jest pierwotnie liczona. Powód: wyrównanie i rozsuwanie
+tylko **wydłużają**, więc przejdą przez każdy limit ustawiony wcześniej. W jednej
+sesji zdarzyło się to cztery razy:
+
+| Etap | Co obeszło zabezpieczenie |
+|---|---|
+| rozsuwanie, próba 1 | odsunięcie tekstu przeniosło **linię** na drugi tekst |
+| rozsuwanie, próba 2 | wyrównanie dociągnęło partnera i wyrzuciło teksty **za kartkę** |
+| rozsuwanie, próba 3 | „dalej" dla wymiaru wewnętrznego = **głębiej w materiał** |
+| zacisk arkusza, próba 1 | **wyrównanie** wydłużyło plan ponad limit |
+
+Tylko ostatni etap skraca, więc żaden wcześniejszy nie może go unieważnić.
+
+⚠️ **Każda nowa stała wyrażająca odległość: papier czy model?** To pytanie
+kosztowało ten projekt najwięcej i wróciło w v1.9 w nowej stałej (`30 mm` modelu
+to 3 mm papieru przy 1:10 — zabezpieczenie zamilkło). Prześwity i rozmiary
+tekstu są w **mm papieru × skala**; głębokości wewnątrz części w jednostkach
+modelu.
 
 ## Jak ustalać progi i stałe
 

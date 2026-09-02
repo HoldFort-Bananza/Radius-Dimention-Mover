@@ -22,6 +22,8 @@ promieni** (`R…`) na otwartym rysunku.
 - Opisy otworów, które leżałyby na linii odniesienia, są delikatnie odsuwane.
 - Dwa teksty, które wylądowałyby jeden na drugim, są rozsuwane — a gdy każde
   rozsunięcie byłoby gorsze, program **nie rusza niczego** i mówi o tym w logu.
+- Żaden tekst nie wychodzi **za arkusz** — na końcu wszystko jest przycinane do
+  krawędzi kartki.
 
 Wszystko liczone **analitycznie, jednym przejściem** — bez prób „aż się uda".
 Efekt jest natychmiastowy.
