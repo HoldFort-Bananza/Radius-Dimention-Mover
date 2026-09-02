@@ -165,6 +165,28 @@ namespace RadiusDimensionMover
         // bok i tylko o brakującą różnicę, więc zostaje przy swoim otworze.
         private const double LeaderCheckLengthFactor = 1.5;
 
+        // Zapas doliczany do odcinka sprawdzajacego droge do WNETRZA czesci -
+        // na rozmiar samego tekstu, ktory siega poza swoj punkt zaczepienia.
+        //
+        // W mm NA PAPIERZE, przeliczane przez skale. Pierwsza wersja miala tu
+        // 30mm w jednostkach MODELU i to byl blad tego samego rodzaju, ktory
+        // kosztowal ten projekt najwiecej: rozmiar tekstu jest wlasnoscia
+        // PAPIERU. 30mm modelu to 6mm papieru przy 1:5 i 3mm przy 1:10, czyli
+        // mniej niz sam tekst - test przecienia przestal odpalac sie zupelnie
+        // (zmierzone: 0 odrzucen na 101 rysunkach, wczesniej odrzucal).
+        private const double InsideRayMarginPaperMm = 15.0;
+
+        // Margines od krawedzi arkusza dla KAZDEGO tekstu wyrzuconego na
+        // zewnatrz (mm papieru).
+        //
+        // Odleglosc na zewnatrz wynika wylacznie z tego, jak daleko siegaja
+        // linie wymiarowe - a te potrafia byc odsuniete bardzo daleko (na
+        // [31339] zestaw z Distance 175mm mial linie 193mm od luku). Bez
+        // zacisku tekst leci za nimi i wychodzi za kartke; operator zglosil to
+        // na rysunkach w skali 1:10. Zacisk moze tylko PRZYCIAGNAC tekst
+        // blizej, nigdy odsunac, wiec nie da sie nim stworzyc nowego problemu.
+        private const double OutsideSheetMarginPaperMm = 12.0;
+
         // Minimalny prześwit między opisem (Mark) a linią odniesienia wymiaru
         // R, ponad połowę przekątnej opisu (mm w modelu). Odsunięcie ma być
         // delikatne - tyle, żeby się nie nachodziły.
@@ -333,6 +355,17 @@ namespace RadiusDimensionMover
             AlignPlans(plans, log);
             ResolveTextCollisions(plans, sheet.GetAxisAlignedBoundingBox(), log);
 
+            // ZACISK ARKUSZA JAKO OSTATNI ETAP - i to celowo.
+            //
+            // Pierwsza wersja przycinała w ComputePlan, czyli PRZED wyrównaniem.
+            // A wyrównanie tylko WYDŁUŻA, więc bez trudu przekraczało limit:
+            // na [31608] tekst przycięty do 48mm został potem wyrównaniem
+            // wyciągnięty na 66,1mm. Zabezpieczenie obchodzone przez późniejszy
+            // etap to ten sam błąd, który trzykrotnie zepsuł rozsuwanie kolizji.
+            //
+            // Skracać wolno zawsze, więc ostatni etap nie może niczego zepsuć.
+            ClampAllToSheet(plans, sheet.GetAxisAlignedBoundingBox(), log);
+
             // Promienie linii odniesienia - potrzebne w ostatnim etapie, żeby
             // wiedzieć, czego opisy mają nie zasłaniać.
             var leaderRays = new List<LeaderRay>();
@@ -456,6 +489,23 @@ namespace RadiusDimensionMover
                 return null;
             }
 
+            // Początek widoku na arkuszu - potrzebny i do zacisku arkusza, i do
+            // porównywania położeń tekstów między wymiarami.
+            var viewOrigin = new Tekla.Structures.Geometry3d.Point(0, 0, 0);
+            try
+            {
+                var ownView = rd.GetView();
+                if (ownView != null)
+                {
+                    viewOrigin = ownView.Origin;
+                }
+            }
+            catch
+            {
+                // Bez początku widoku zacisk się nie wykona, a porównanie tekstów
+                // zadziała w układzie widoku - dla jednego widoku to wystarcza.
+            }
+
             double radius = Distance2D(center, rd.ArcPoint2);
             if (radius < 1e-6)
             {
@@ -508,8 +558,24 @@ namespace RadiusDimensionMover
                     OriginY = center.Y - dirY * radius,
                     DirX = -dirX,
                     DirY = -dirY,
+                    // Tyle, ile tekst FAKTYCZNIE przebywa, plus zapas na jego
+                    // wlasny rozmiar. NIE plus 1,5 x dlugosc czesci.
+                    //
+                    // Bylo tu `+ FaceLongMm * LeaderCheckLengthFactor`, co na
+                    // blasze 135 x 330 dawalo odcinek 542mm przy drodze tekstu
+                    // 47mm - jedenascie razy za duzo i o 200mm dluzej niz cala
+                    // blacha. Taka polprosta wychodzila daleko poza czesc i
+                    // trafiala na linie wymiarowe niemajace z tym wymiarem nic
+                    // wspolnego, wiec tekst byl wyrzucany na zewnatrz bez
+                    // potrzeby. Im dluzsza blacha, tym pewniej (zgloszone na
+                    // [1.1178]).
+                    //
+                    // Ta stala zostala tu przeniesiona z INNEGO zadania -
+                    // sprawdzania, ktore opisy otworow leza na linii odniesienia
+                    // wymiaru wyrzuconego na zewnatrz. Tam leader bywa dlugi i
+                    // dlugi odcinek ma sens; tutaj droga jest krotka i znana.
                     Length = facts.FaceShortMm * InsideFraction
-                             + facts.FaceLongMm * LeaderCheckLengthFactor
+                             + InsideRayMarginPaperMm * scale
                 };
 
                 if (CrossesAnySegment(insideRay, obstacles))
@@ -555,23 +621,6 @@ namespace RadiusDimensionMover
             // Kierunek zapisany w planie to kierunek, w którym FAKTYCZNIE
             // pójdzie tekst - dla wariantu wewnętrznego przeciwny do "na
             // zewnątrz".
-            // Początek widoku na arkuszu - potrzebny do porównywania
-            // położeń tekstów między wymiarami (ResolveTextCollisions).
-            var viewOrigin = new Tekla.Structures.Geometry3d.Point(0, 0, 0);
-            try
-            {
-                var ownView = rd.GetView();
-                if (ownView != null)
-                {
-                    viewOrigin = ownView.Origin;
-                }
-            }
-            catch
-            {
-                // Bez początku widoku porównanie zadziała w układzie widoku -
-                // dla rysunku z jednym widokiem to wystarcza.
-            }
-
             // Wariant wewnętrzny zaczepia się na PRZECIWNYM biegunie okręgu
             // i idzie w stronę materiału - stąd osobny znak. Wariant
             // zewnętrzny zaczepia się na łuku i idzie kierunkiem dirOut.
@@ -761,6 +810,81 @@ namespace RadiusDimensionMover
                         + gap.ToString("0.#") + "mm, wymagane "
                         + MinTextGapPaperMm.ToString("0") + "mm).");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Przycina KAŻDY plan tak, żeby tekst został na arkuszu. Wołane jako
+        /// ostatni etap, po wyrównaniu i po rozsunięciu kolizji - patrz komentarz
+        /// w miejscu wywołania.
+        /// </summary>
+        private static void ClampAllToSheet(
+            List<PlacementPlan> plans, RectangleBoundingBox sheet, Action<string> log)
+        {
+            foreach (var p in plans)
+            {
+                if (p.Inside)
+                {
+                    continue;   // wewnątrz obrysu arkusz nie jest ograniczeniem
+                }
+
+                double wanted = p.LeaderPaperMm;
+                double allowed = ClampToSheet(p.ArcSheetX, p.ArcSheetY,
+                    p.DirX, p.DirY, wanted, sheet);
+
+                if (allowed >= wanted - 0.01)
+                {
+                    continue;
+                }
+
+                log("  Przycięto do arkusza: " + wanted.ToString("0.#") + "mm -> "
+                    + allowed.ToString("0.#") + "mm na papierze (tekst wychodził za kartkę).");
+                p.DistanceModel = allowed * p.Scale;
+            }
+        }
+
+        /// <summary>
+        /// Największa długość linii odniesienia (mm papieru), przy której tekst
+        /// jeszcze mieści się na arkuszu z marginesem.
+        ///
+        /// Tekst wędruje po `A + u*t`, a arkusz jest prostokątem wyrównanym do
+        /// osi, więc dla każdej z czterech krawędzi wystarczy rozwiązać jedno
+        /// równanie liniowe i wziąć najmniejsze dodatnie ograniczenie. Zamknięty
+        /// wzór, bez iteracji.
+        ///
+        /// Zwraca `wanted`, gdy tekst i tak się mieści - zacisk nigdy nie
+        /// wydłuża.
+        /// </summary>
+        private static double ClampToSheet(double arcSheetX, double arcSheetY,
+            double dirX, double dirY, double wanted, RectangleBoundingBox sheet)
+        {
+            try
+            {
+                double minX = sheet.MinPoint.X + OutsideSheetMarginPaperMm;
+                double maxX = sheet.MaxPoint.X - OutsideSheetMarginPaperMm;
+                double minY = sheet.MinPoint.Y + OutsideSheetMarginPaperMm;
+                double maxY = sheet.MaxPoint.Y - OutsideSheetMarginPaperMm;
+
+                // Gdy sam punkt na łuku leży już poza dozwolonym obszarem, nie ma
+                // czego przycinać - zostawiamy jak było.
+                if (arcSheetX < minX || arcSheetX > maxX || arcSheetY < minY || arcSheetY > maxY)
+                {
+                    return wanted;
+                }
+
+                double limit = wanted;
+
+                if (dirX > 1e-6) limit = Math.Min(limit, (maxX - arcSheetX) / dirX);
+                else if (dirX < -1e-6) limit = Math.Min(limit, (minX - arcSheetX) / dirX);
+
+                if (dirY > 1e-6) limit = Math.Min(limit, (maxY - arcSheetY) / dirY);
+                else if (dirY < -1e-6) limit = Math.Min(limit, (minY - arcSheetY) / dirY);
+
+                return limit < 0 ? wanted : limit;
+            }
+            catch
+            {
+                return wanted;   // brak danych o arkuszu = zachowanie jak dotąd
             }
         }
 

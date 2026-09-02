@@ -9,7 +9,7 @@
 ; instalacja wymaga jej zaakceptowania.
 
 #define MyAppName "Radius Dimension Mover"
-#define MyAppVersion "1.8"
+#define MyAppVersion "1.9"
 #define MyAppPublisher "HoldFort-Bananza"
 #define MyAppExeName "RadiusDimensionMover.exe"
 
