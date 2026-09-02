@@ -1265,6 +1265,176 @@ namespace RadiusDimensionMover
                 | System.Text.RegularExpressions.RegexOptions.Compiled);
 
         /// <summary>
+        /// Rozmiar plaszczyzny blachy policzony z KONTURU - ale tylko wtedy,
+        /// gdy blacha lezy w modelu SKOSNIE. Dla pozostalych zwraca false i
+        /// obowiazuje pomiar z bryly.
+        ///
+        /// DLACZEGO TYLKO DLA SKOSNYCH. Zadna z dwoch metod nie jest lepsza
+        /// zawsze:
+        ///
+        ///   bryla (GetSolid)  - wyrownana do osi GLOBALNYCH, wiec dla blachy
+        ///                       przechylonej rozdmuchana; ale jest PO
+        ///                       wycieciach, czyli pokazuje realny obrys
+        ///   kontur (Contour)  - zawsze we wlasnej plaszczyznie, wiec odporny
+        ///                       na przechylenie; ale opisuje blache PRZED
+        ///                       wycieciami, czyli dla przycietej jest za duzy
+        ///
+        /// Pomiary z modelu, 125 blach z wymiarem R:
+        ///   121  oba sposoby zgodne w granicach 1mm
+        ///     3  blachy skosne - kontur poprawny, bryla zawyza o ~100mm
+        ///        ([11227] 246 -&gt; 145, [11178] i [1.1178] 242 -&gt; 135)
+        ///     1  blacha przycieta - kontur ZAWYZA ([31609] 256 -&gt; 295)
+        ///     0  zmienia decyzje wewnatrz / na zewnatrz
+        ///
+        /// Stad warunek na skosnosc: bierzemy kontur dokladnie tam, gdzie bryla
+        /// jest bezuzyteczna, i nie ruszamy pozostalych 122 przypadkow.
+        ///
+        /// JAK LICZYMY SZEROKOSC. Metoda obracajacych sie suwmiarek: dla kazdej
+        /// krawedzi obrysu rzutujemy wszystkie punkty na te krawedz i na
+        /// prostopadla do niej w plaszczyznie konturu, i bierzemy najmniejszy
+        /// uzyskany wymiar poprzeczny. Dla wielokata wypuklego to jest jego
+        /// prawdziwa najmniejsza szerokosc - a wlasnie ona ogranicza, czy tekst
+        /// zmiesci sie w obrysie.
+        /// </summary>
+        private static bool ObliqueContourFaceSize(
+            Tekla.Structures.Model.Part modelPart, out double faceShort, out double faceLong)
+        {
+            faceShort = 0;
+            faceLong = 0;
+
+            try
+            {
+                if (!(modelPart is Tekla.Structures.Model.ContourPlate plate))
+                {
+                    return false;
+                }
+
+                var pts = new List<double[]>();
+                foreach (var o in plate.Contour.ContourPoints)
+                {
+                    if (o is Tekla.Structures.Model.ContourPoint cp)
+                    {
+                        pts.Add(new[] { cp.X, cp.Y, cp.Z });
+                    }
+                }
+
+                int n = pts.Count;
+                if (n < 3)
+                {
+                    return false;
+                }
+
+                // Normalna plaszczyzny konturu z pierwszych trzech punktow,
+                // ktore nie sa wspolliniowe.
+                double[] normal = null;
+                for (int i = 2; i < n && normal == null; i++)
+                {
+                    double[] c = Cross3(Sub3(pts[1], pts[0]), Sub3(pts[i], pts[0]));
+                    if (Len3(c) > 1e-6)
+                    {
+                        normal = Norm3(c);
+                    }
+                }
+                if (normal == null)
+                {
+                    return false;
+                }
+
+                // Rownolegla do osi = bryla jest wiarygodna, nie ruszamy jej.
+                for (int i = 0; i < 3; i++)
+                {
+                    if (Math.Abs(Math.Abs(normal[i]) - 1.0) < 1e-3)
+                    {
+                        return false;
+                    }
+                }
+
+                double bestShort = double.MaxValue;
+                double bestLong = 0;
+
+                for (int i = 0; i < n; i++)
+                {
+                    double[] edge = Sub3(pts[(i + 1) % n], pts[i]);
+                    if (Len3(edge) < 1e-6)
+                    {
+                        continue;
+                    }
+
+                    double[] ax = Norm3(edge);
+                    double[] ay = Norm3(Cross3(normal, ax));
+
+                    double minA = double.MaxValue, maxA = double.MinValue;
+                    double minB = double.MaxValue, maxB = double.MinValue;
+                    foreach (var p in pts)
+                    {
+                        double[] r = Sub3(p, pts[0]);
+                        double a = Dot3(r, ax);
+                        double b = Dot3(r, ay);
+                        if (a < minA) minA = a;
+                        if (a > maxA) maxA = a;
+                        if (b < minB) minB = b;
+                        if (b > maxB) maxB = b;
+                    }
+
+                    double across = maxB - minB;
+                    double along = maxA - minA;
+
+                    if (across < bestShort)
+                    {
+                        bestShort = across;
+                        bestLong = along;
+                    }
+                    if (along < bestShort)
+                    {
+                        bestShort = along;
+                        bestLong = across;
+                    }
+                }
+
+                if (bestShort == double.MaxValue || bestShort <= 0)
+                {
+                    return false;
+                }
+
+                faceShort = bestShort;
+                faceLong = Math.Max(bestLong, bestShort);
+                return true;
+            }
+            catch
+            {
+                return false;   // brak danych = zostaje pomiar z bryly
+            }
+        }
+
+        private static double[] Sub3(double[] a, double[] b)
+        {
+            return new[] { a[0] - b[0], a[1] - b[1], a[2] - b[2] };
+        }
+
+        private static double[] Cross3(double[] a, double[] b)
+        {
+            return new[] { a[1] * b[2] - a[2] * b[1],
+                           a[2] * b[0] - a[0] * b[2],
+                           a[0] * b[1] - a[1] * b[0] };
+        }
+
+        private static double Dot3(double[] a, double[] b)
+        {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        }
+
+        private static double Len3(double[] a)
+        {
+            return Math.Sqrt(Dot3(a, a));
+        }
+
+        private static double[] Norm3(double[] a)
+        {
+            double l = Len3(a);
+            return new[] { a[0] / l, a[1] / l, a[2] / l };
+        }
+
+        /// <summary>
         /// Ustala, czy zaokrąglenia na konturze części są WYPUKŁE (zwykły
         /// zaokrąglony narożnik) czy WKLĘSŁE (wcięcie), i zapisuje wynik pod
         /// kluczem promienia w facts.ShapeByRadius.
@@ -1491,8 +1661,32 @@ namespace RadiusDimensionMover
                         double largest = Math.Max(dx, Math.Max(dy, dz));
                         double middle = dx + dy + dz - smallest - largest;
 
-                        facts.FaceLongMm = Math.Max(facts.FaceLongMm, largest);
-                        facts.FaceShortMm = Math.Max(facts.FaceShortMm, middle);
+                        // Bounding box jest wyrownany do osi GLOBALNYCH, wiec
+                        // "odrzuc najmniejszy wymiar" dziala tylko dla czesci
+                        // lezacej rownolegle do osi. Blacha przechylona daje box
+                        // rozdmuchany w kazdym kierunku - na [11227] (BL15, box
+                        // 145 x 260 x 246) wychodzilo z tego FaceShort = 246mm
+                        // przy realnych 145mm.
+                        //
+                        // Dla takiej blachy bierzemy rozmiar z KONTURU, w jego
+                        // wlasnej plaszczyznie. Dla pozostalych zostaje bryla, i
+                        // to celowo - patrz ObliqueContourFaceSize.
+                        double faceShort = middle;
+                        double faceLong = largest;
+
+                        if (ObliqueContourFaceSize(modelPart, out double contourShort, out double contourLong))
+                        {
+                            faceShort = contourShort;
+                            faceLong = contourLong;
+
+                            log?.Invoke("  Czesc lezy skosnie w modelu - rozmiar plaszczyzny"
+                                + " z konturu: " + contourShort.ToString("0") + " x "
+                                + contourLong.ToString("0") + "mm (bryla dawala "
+                                + middle.ToString("0") + " x " + largest.ToString("0") + "mm).");
+                        }
+
+                        facts.FaceLongMm = Math.Max(facts.FaceLongMm, faceLong);
+                        facts.FaceShortMm = Math.Max(facts.FaceShortMm, faceShort);
                     }
 
                     var bolts = modelPart.GetBolts();
